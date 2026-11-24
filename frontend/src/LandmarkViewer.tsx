@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Landmark } from './landmarks'
+import { buildInterior } from './interiors'
 
 type Spec = {
   name: string
@@ -162,9 +163,13 @@ export default function LandmarkViewer({ landmark }: { landmark: Landmark }) {
     controls: OrbitControls
     camera: THREE.PerspectiveCamera
     reset: () => void
+    scene: THREE.Scene
+    model: THREE.Group
+    renderer: THREE.WebGLRenderer
   } | null>(null)
   const [auto, setAuto] = useState(true)
   const [walking, setWalking] = useState(false)
+  const [inside, setInside] = useState(false)
 
   useEffect(() => {
     const element = mount.current
@@ -237,7 +242,7 @@ export default function LandmarkViewer({ landmark }: { landmark: Landmark }) {
     }
     tick()
 
-    sceneRef.current = { controls, camera, reset }
+    sceneRef.current = { controls, camera, reset, scene, model, renderer }
 
     return () => {
       cancelAnimationFrame(frame)
@@ -276,6 +281,112 @@ export default function LandmarkViewer({ landmark }: { landmark: Landmark }) {
     }
   }, [auto, walking])
 
+  // Explorable interior: first-person camera with WASD and drag-to-look.
+  useEffect(() => {
+    const context = sceneRef.current
+    if (!context || !inside) return
+    const { camera, controls, model, scene } = context
+
+    controls.enabled = false
+    model.visible = false
+    const interior = buildInterior(landmark.kind)
+    scene.add(interior)
+
+    // Start inside the plan, a few metres back from the central feature.
+    const state = { yaw: 0, pitch: 0, x: 0, z: 4.2 }
+    camera.position.set(0, 1.7, 4.2)
+    camera.rotation.order = 'YXZ'
+    camera.rotation.set(0, 0, 0)
+
+    const pressed = new Set<string>()
+    const keys = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift']
+    const isField = (target: EventTarget | null) =>
+      target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isField(event.target)) return
+      const key = event.key.toLowerCase()
+      if (!keys.includes(key)) return
+      pressed.add(key)
+      event.preventDefault()
+    }
+    const onKeyUp = (event: KeyboardEvent) => pressed.delete(event.key.toLowerCase())
+    const onBlur = () => pressed.clear()
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+
+    const element = context.renderer.domElement
+    let dragging = false
+    let lastX = 0
+    let lastY = 0
+    const onPointerDown = (event: PointerEvent) => {
+      dragging = true
+      lastX = event.clientX
+      lastY = event.clientY
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      if (!dragging) return
+      state.yaw -= (event.clientX - lastX) * 0.0045
+      state.pitch = Math.max(-1.15, Math.min(1.15, state.pitch - (event.clientY - lastY) * 0.0045))
+      lastX = event.clientX
+      lastY = event.clientY
+    }
+    const onPointerUp = () => { dragging = false }
+    element.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+
+    let frame = 0
+    let last = performance.now()
+    const tick = (time: number) => {
+      frame = requestAnimationFrame(tick)
+      const seconds = Math.min(0.1, (time - last) / 1000)
+      last = time
+      const forward = (pressed.has('w') || pressed.has('arrowup') ? 1 : 0)
+        - (pressed.has('s') || pressed.has('arrowdown') ? 1 : 0)
+      const strafe = (pressed.has('d') || pressed.has('arrowright') ? 1 : 0)
+        - (pressed.has('a') || pressed.has('arrowleft') ? 1 : 0)
+      const speed = pressed.has('shift') ? 4.2 : 1.6
+      const sin = Math.sin(state.yaw)
+      const cos = Math.cos(state.yaw)
+      state.x += (-sin * forward + cos * strafe) * speed * seconds
+      state.z += (-cos * forward - sin * strafe) * speed * seconds
+      const radius = Math.hypot(state.x, state.z)
+      if (radius > 10) {
+        state.x *= 10 / radius
+        state.z *= 10 / radius
+      }
+      camera.position.set(state.x, 1.7, state.z)
+      camera.rotation.set(state.pitch, state.yaw, 0)
+    }
+    frame = requestAnimationFrame(tick)
+
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+      element.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      pressed.clear()
+      scene.remove(interior)
+      interior.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.geometry.dispose()
+          const material = object.material
+          if (Array.isArray(material)) material.forEach((item) => item.dispose())
+          else material.dispose()
+        }
+      })
+      model.visible = true
+      controls.enabled = true
+      controls.target.set(0, 5, 0)
+      camera.rotation.set(0, 0, 0)
+      context.reset()
+    }
+  }, [inside, landmark.kind])
+
   const materialRows: Spec[] = landmark.materials
 
   return (
@@ -283,11 +394,14 @@ export default function LandmarkViewer({ landmark }: { landmark: Landmark }) {
       <div className="viewer-canvas" ref={mount} />
       <div className="viewer-toolbar">
         <button className={auto ? 'active' : ''} onClick={() => setAuto(!auto)} title="Auto-rotate">AUTO</button>
-        <button className={walking ? 'active' : ''} onClick={() => setWalking(!walking)} title="Walk the grounds">WALK</button>
+        <button className={walking ? 'active' : ''} onClick={() => { setWalking(!walking); setInside(false) }} title="Walk the grounds">WALK</button>
+        <button className={inside ? 'active' : ''} onClick={() => { setInside(!inside); setWalking(false); setAuto(false) }} title="Step inside the building">INSIDE</button>
         <button onClick={() => sceneRef.current?.reset()} title="Reset camera">RESET</button>
       </div>
       <div className="viewer-note">
-        PROCEDURAL 3D · {landmark.kind.toUpperCase()} · DRAG TO ORBIT 360°
+        {inside
+          ? 'INTERPRETIVE INTERIOR · BUILT FROM PUBLISHED DESCRIPTIONS, NOT PHOTOS · WASD TO WALK'
+          : `PROCEDURAL 3D · ${landmark.kind.toUpperCase()} · DRAG TO ORBIT 360°`}
       </div>
       <div className="viewer-swatches">
         {materialRows.slice(0, 4).map((material) => (

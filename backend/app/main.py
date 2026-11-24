@@ -5,12 +5,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .aggregate import Aggregator
 from .analyst import answer
 from .models import AnalystRequest, NewsItem, Signal, Snapshot, SourceStatus
+from .sources.towers import fetch_towers, to_geojson
 
 log = logging.getLogger("india-ai-os")
 
@@ -106,6 +108,25 @@ def create_app(aggregator: Aggregator | None = None, *, load_feeds: bool = True)
     @app.post("/api/v1/analyst")
     def ask_analyst(payload: AnalystRequest, request: Request) -> dict:
         return answer(payload.question, snapshot(request))
+
+    @app.get("/api/v1/towers")
+    async def get_towers(
+        west: float = Query(ge=-180, le=180),
+        south: float = Query(ge=-90, le=90),
+        east: float = Query(ge=-180, le=180),
+        north: float = Query(ge=-90, le=90),
+    ) -> dict:
+        """Communication towers in a bounding box, proxied from OpenStreetMap."""
+        if east <= west or north <= south:
+            raise HTTPException(status_code=400, detail="Invalid bounding box")
+        if (east - west) * (north - south) > 4:
+            raise HTTPException(status_code=400, detail="Bounding box too large; zoom in further")
+        async with httpx.AsyncClient() as client:
+            try:
+                towers = await fetch_towers(client, south=south, west=west, north=north, east=east)
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                raise HTTPException(status_code=502, detail=f"Overpass unavailable: {exc}") from exc
+        return to_geojson(towers)
 
     return app
 

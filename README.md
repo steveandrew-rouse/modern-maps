@@ -115,6 +115,8 @@ Signal record:
 
 `provider`, `time` and `url` are mandatory provenance fields; the UI shows them for every selected record.
 
+`GET /api/v1/towers?west=&south=&east=&north=` returns communication towers in a bounding box (GeoJSON, cached for 15 minutes, Overpass-backed).
+
 ## 7. 3D map, ASCII locator and landmarks
 
 **3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) from zoom 13.6, with non-3D buildings filtered out. Buildings keep the colour mapped in OSM where it exists and otherwise use concrete-to-glass material tones sorted by height, drawn at 82% opacity so the satellite imagery still reads underneath.
@@ -143,6 +145,14 @@ The 3D models are procedural interpretations built from primitives, not survey-g
 **Water and airports.** Lakes and river polygons fill over the imagery, waterways draw as lines, and airport runways and taxiways come from the `aeroway` layer.
 
 **Dams.** Ten major Indian dams and barrages (Tehri, Bhakra, Idukki, Sardar Sarovar, Nagarjuna Sagar, Koyna, Rihand, Ukai, Hirakud, Mettur) are plotted from a curated public dataset in `frontend/src/infrastructure.ts`. Click a marker for river, type, height and year. Coordinates are rounded to about a kilometre.
+
+**Terrain.** Exaggeration eases from 1.3 at country scale down to 0.85 from zoom 12, because the elevation DEM is roughly 90 m per cell — strong exaggeration at street zoom is what lifts road casings and building bases off the ground and bends them across slopes.
+
+**Hologram scan.** Clicking anywhere on the map opens a hologram card listing what the style is actually drawing under that pixel: building height and class, road class with bridge/tunnel and lane counts, water, airport surface, railway, dam, landmark, aircraft or tower, plus the exact coordinate. Where nothing is mapped it says so rather than inventing an object.
+
+**Interiors.** The landmark panel's `INSIDE` button swaps the exterior model for an explorable interior: an octagonal crypt with jali screens and cenotaph (Taj Mahal), a memorial colonnade with the Amar Jawan flame (India Gate), a colonnade courtyard (Qutub Minar), a durbar hall (Mysore Palace), a stair shaft (minaret) and a sanctum under a gold canopy (Harmandir Sahib). WASD walks at eye height, drag looks around, Shift moves faster. These are built from published descriptions of the spaces — not from photographs, and not photogrammetry.
+
+**Network towers.** Communication towers are queried live from OpenStreetMap through Overpass and proxied by the API at `/api/v1/towers` (Overpass sends no CORS headers, so the browser cannot call it directly). Clicking a tower draws expanding coverage rings across the map — an indicative visualisation, not measured signal strength. If every Overpass mirror is unreachable the layer stays empty instead of showing invented sites.
 
 **Walk mode.** The `WALK` button drops the camera to street level (~17.6 zoom, 78° pitch) at the focused place. `W`/`A`/`S`/`D` or the arrow keys move at 1.5 m/s, `Shift` jogs at 6 m/s, drag turns the view. The HUD shows position, heading, distance travelled and whether you are moving. You are walking over the real satellite imagery and the real OSM building extrusions — nothing is generated to fill the gaps, so you see what the tiles contain and nothing inside the buildings.
 
@@ -185,6 +195,8 @@ Pages cannot execute Python, so a Pages-only deployment shows the UI shell with 
 - There are no interiors beyond the eight procedural landmark models, and no underground pipelines or utility networks — that data is not published openly for India, so none is invented.
 - Bridge deck elevation is a cartographic shadow effect; dam coordinates are rounded to roughly 1 km; dam heights are published maximum structure heights.
 - Aircraft livery is inferred from the callsign prefix and the 3D airframe is a generic narrowbody; OpenSky does not provide type or registration in the public feed.
+- Landmark interiors are interpretive models built from written descriptions; they are not scans and contain no furniture or artwork data.
+- Tower coverage rings are a schematic animation, not a radio propagation model. Tower positions come from OSM and are only as complete as OSM's coverage.
 - Traffic and crowd overlays are simulations, not observed vehicle counts or footfall.
 - Bundled landmark imagery is AI-generated illustration, captioned in the interface.
 - No person-level tracking, no face recognition, no watchlists, no surveillance workflows.

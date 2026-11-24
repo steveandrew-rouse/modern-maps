@@ -199,10 +199,107 @@ const MAP_STYLE: StyleSpecification = {
       },
     },
   ],
-  terrain: { source: 'terrain', exaggeration: 1.35 },
+  terrain: { source: 'terrain', exaggeration: 1.3 },
 }
 
 type Overlays = { buildings: boolean; traffic: boolean; crowd: boolean }
+type InspectRow = { label: string; value: string }
+
+const INSPECT_LAYERS = [
+  'buildings-3d', 'road-bridge', 'road-fill', 'road-minor', 'road-tunnel', 'water',
+  'waterway', 'aeroway', 'rail', 'lyr-dam', 'lyr-landmark', 'lyr-tower', 'lyr-flight',
+]
+
+function addTowerIcon(map: MapLibreMap) {
+  if (map.hasImage('tower')) return
+  const size = 48
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const context = canvas.getContext('2d')
+  if (!context) return
+  context.strokeStyle = '#7fe3ff'
+  context.lineWidth = 2
+  context.beginPath()
+  context.moveTo(24, 8)
+  context.lineTo(17, 40)
+  context.moveTo(24, 8)
+  context.lineTo(31, 40)
+  context.stroke()
+  context.beginPath()
+  context.moveTo(18.5, 30)
+  context.lineTo(29.5, 30)
+  context.moveTo(20.5, 22)
+  context.lineTo(27.5, 22)
+  context.stroke()
+  context.fillStyle = '#d9f7ff'
+  context.beginPath()
+  context.arc(24, 8, 2.6, 0, Math.PI * 2)
+  context.fill()
+  context.strokeStyle = 'rgba(127, 227, 255, 0.8)'
+  context.lineWidth = 1.6
+  for (const radius of [5, 9]) {
+    context.beginPath()
+    context.arc(24, 9, radius, -Math.PI * 0.82, -Math.PI * 0.18)
+    context.stroke()
+  }
+  map.addImage('tower', context.getImageData(0, 0, size, size), { pixelRatio: 2 })
+}
+
+/** What is under this pixel, described for the hologram overlay. */
+function describeFeatures(map: MapLibreMap, x: number, y: number): InspectRow[] {
+  const layers = INSPECT_LAYERS.filter((id) => map.getLayer(id))
+  if (!layers.length) return []
+  const rows: InspectRow[] = []
+  const seen = new Set<string>()
+  for (const feature of map.queryRenderedFeatures([x, y], { layers })) {
+    const properties = feature.properties ?? {}
+    const layerId = feature.layer.id
+    let label = ''
+    let value = ''
+    if (layerId === 'buildings-3d') {
+      const height = Math.round(Number(properties.render_height ?? properties.height ?? 0))
+      label = String(properties.name ?? 'Building')
+      value = `${height > 0 ? `${height} m tall` : 'height unmapped'}${properties.class ? ` · ${properties.class}` : ''}`
+    } else if (layerId.startsWith('road-')) {
+      const kind = String(properties.class ?? 'road')
+      label = String(properties.name ?? properties.ref ?? `${kind} road`)
+      value = `${kind}${properties.brunnel ? ` · ${properties.brunnel}` : ''}${properties.lanes ? ` · ${properties.lanes} lanes` : ''}`
+    } else if (layerId === 'water') {
+      label = String(properties.name ?? 'Water body')
+      value = String(properties.class ?? 'water')
+    } else if (layerId === 'waterway') {
+      label = String(properties.name ?? 'Waterway')
+      value = String(properties.class ?? 'waterway')
+    } else if (layerId === 'aeroway') {
+      label = String(properties.name ?? properties.ref ?? 'Airport surface')
+      value = String(properties.class ?? 'aeroway')
+    } else if (layerId === 'rail') {
+      label = String(properties.name ?? 'Railway line')
+      value = 'rail'
+    } else if (layerId === 'lyr-dam') {
+      label = String(properties.name ?? 'Dam')
+      value = `dam · ${Math.round(Number(properties.height ?? 0))} m`
+    } else if (layerId === 'lyr-landmark') {
+      label = String(properties.name ?? 'Landmark')
+      value = 'landmark · click for the 360° panel'
+    } else if (layerId === 'lyr-flight') {
+      label = String(properties.title ?? 'Aircraft')
+      const heading = Math.round(Number(properties.heading ?? 0))
+      value = `aircraft · hdg ${heading}° · ${Math.round(Number(properties.altitude ?? 0))} m`
+    } else if (layerId === 'lyr-tower') {
+      label = String(properties.name ?? 'Mobile network tower')
+      value = 'communications tower · click for coverage rings'
+    }
+    if (!label) continue
+    const key = `${label}|${value}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push({ label, value })
+    if (rows.length >= 5) break
+  }
+  return rows
+}
 
 function toFeatureCollection(signals: Signal[]) {
   return {
@@ -217,6 +314,7 @@ function toFeatureCollection(signals: Signal[]) {
           layer: signal.layer,
           severity: signal.severity,
           magnitude: Number(signal.metrics.magnitude ?? 0),
+          title: signal.title,
           heading: Number(signal.metrics.heading_deg ?? 0),
           altitude: Number(signal.metrics.altitude_m ?? 0),
           airlineCode: signal.layer === 'flight' ? liveryFor(signal.title).code : 'UNK',
@@ -251,6 +349,8 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   const orbitRef = useRef(true)
   const [hud, setHud] = useState({ zoom: 0, bearing: 0 })
   const [walkHud, setWalkHud] = useState({ lat: 0, lng: 0, heading: 0, moving: false, distance: 0 })
+  const [inspect, setInspect] = useState<{ lng: number; lat: number; x: number; y: number; rows: InspectRow[] } | null>(null)
+  const exaggerationRef = useRef(1.3)
   orbitRef.current = orbit
 
   useEffect(() => {
@@ -269,12 +369,14 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       attributionControl: false,
     })
     mapRef.current = map
+    if (import.meta.env.DEV) (window as unknown as { __map?: MapLibreMap }).__map = map
     map.on('error', (event) => console.error('MAP ERROR', event.error?.message ?? event))
     map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
     map.on('load', () => {
       map.resize()
       addPlaneIcons(map)
+      addTowerIcon(map)
       map.setSky({
         'sky-color': '#0a2033', 'horizon-color': '#2b5673', 'fog-color': '#08131d',
         'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.45,
@@ -296,6 +398,40 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     observer.observe(element)
     return () => observer.disconnect()
   }, [])
+
+  const waveRef = useRef<(() => void) | null>(null)
+
+  // Expanding coverage rings from a clicked tower; purely indicative.
+  const startWave = (lng: number, lat: number) => {
+    const map = mapRef.current
+    const source = map?.getSource('waves') as GeoJSONSource | undefined
+    if (!source) return
+    waveRef.current?.()
+    const started = performance.now()
+    let frame = 0
+    const tick = (time: number) => {
+      const elapsed = (time - started) / 1000
+      if (elapsed > 8) {
+        source.setData({ type: 'FeatureCollection', features: [] })
+        waveRef.current = null
+        return
+      }
+      const rings = [0, 1, 2].map((index) => {
+        const phase = ((elapsed * 0.5) + index / 3) % 1
+        return {
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: [lng, lat] as [number, number] },
+          properties: { id: index, r: 5 + phase * 110, o: (1 - phase) * 0.55 },
+        }
+      })
+      source.setData({ type: 'FeatureCollection', features: rings })
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    waveRef.current = () => cancelAnimationFrame(frame)
+  }
+
+  useEffect(() => () => { waveRef.current?.() }, [])
 
   useEffect(() => {
     if (!ready) return
@@ -321,6 +457,8 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.addSource('crowd', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map.addSource('picked', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map.addSource('dams', { type: 'geojson', data: damsGeoJSON() })
+    map.addSource('waves', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    map.addSource('towers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
 
     map.addLayer({
       id: 'lyr-flight', type: 'symbol', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
@@ -416,6 +554,32 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       },
       paint: { 'text-color': '#cfeaf6', 'text-halo-color': '#04121b', 'text-halo-width': 1.3 },
     })
+    // Mobile network towers, with animated coverage rings on click.
+    map.addLayer({
+      id: 'lyr-waves', type: 'circle', source: 'waves',
+      paint: {
+        'circle-radius': ['get', 'r'],
+        'circle-color': '#7fe3ff',
+        'circle-opacity': ['get', 'o'],
+        'circle-stroke-width': 1.4,
+        'circle-stroke-color': '#d9f7ff',
+        'circle-stroke-opacity': ['get', 'o'],
+      },
+    })
+    map.addLayer({
+      id: 'lyr-tower', type: 'symbol', source: 'towers', minzoom: 11,
+      layout: {
+        'icon-image': 'tower',
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 11, 0.7, 16, 1.25],
+        'icon-allow-overlap': true,
+        'text-field': ['coalesce', ['get', 'name'], 'Tower'],
+        'text-size': 9,
+        'text-offset': [0, 1.7],
+        'text-font': ['Noto Sans Regular'],
+        'text-optional': true,
+      },
+      paint: { 'text-color': '#bff2ff', 'text-halo-color': '#04121b', 'text-halo-width': 1.2 },
+    })
     map.addLayer({
       id: 'lyr-picked', type: 'circle', source: 'picked',
       paint: {
@@ -444,6 +608,34 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     })
     map.on('mouseenter', 'lyr-dam', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'lyr-dam', () => { map.getCanvas().style.cursor = '' })
+
+    map.on('click', 'lyr-tower', (event) => {
+      const feature = event.features?.[0]
+      if (!feature) return
+      const lng = event.lngLat.lng
+      const lat = event.lngLat.lat
+      startWave(lng, lat)
+      setInspect({
+        lng, lat, x: event.point.x, y: event.point.y,
+        rows: [
+          { label: String(feature.properties?.name ?? 'Mobile network tower'), value: 'communications tower' },
+          { label: 'Coverage rings', value: 'indicative visualisation — not measured signal strength' },
+        ],
+      })
+    })
+    map.on('mouseenter', 'lyr-tower', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'lyr-tower', () => { map.getCanvas().style.cursor = '' })
+
+    // Click anywhere: describe whatever the style is drawing under the cursor.
+    map.on('click', (event) => {
+      setInspect({
+        lng: event.lngLat.lng,
+        lat: event.lngLat.lat,
+        x: event.point.x,
+        y: event.point.y,
+        rows: describeFeatures(map, event.point.x, event.point.y),
+      })
+    })
   }, [ready, signals])
 
   useEffect(() => {
@@ -479,13 +671,91 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     const map = mapRef.current
     if (!map) return
     if (mode === '3d') {
-      map.setTerrain({ source: 'terrain', exaggeration: 1.35 })
+      map.setTerrain({ source: 'terrain', exaggeration: exaggerationRef.current })
       map.easeTo({ pitch: 50, bearing: -8, duration: 700 })
     } else {
       map.setTerrain(null)
       map.easeTo({ pitch: 0, bearing: 0, duration: 700 })
     }
   }, [ready, mode])
+
+  // The DEM is roughly 90 m per cell. At street zoom a strong vertical
+  // exaggeration lifts roads and building bases off the ground and bends them,
+  // so ease it off as the camera descends.
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map) return
+    const apply = () => {
+      const zoom = map.getZoom()
+      const target = zoom >= 12 ? 0.85 : zoom >= 9 ? 1.05 : 1.3
+      if (Math.abs(target - exaggerationRef.current) < 0.01) return
+      exaggerationRef.current = target
+      map.setTerrain({ source: 'terrain', exaggeration: target })
+    }
+    apply()
+    let timer = 0
+    const onZoom = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(apply, 240)
+    }
+    map.on('zoom', onZoom)
+    return () => {
+      window.clearTimeout(timer)
+      map.off('zoom', onZoom)
+    }
+  }, [ready])
+
+  // Communication towers live in OSM but not in the vector tiles, so ask the API
+  // (which proxies Overpass) for the current viewport whenever the map settles.
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map) return
+    const source = map.getSource('towers') as GeoJSONSource | undefined
+    if (!source) return
+
+    let timer = 0
+    let controller: AbortController | null = null
+    let lastFetch = 0
+    const load = async () => {
+      if (map.getZoom() < 11.5) {
+        source.setData({ type: 'FeatureCollection', features: [] })
+        return
+      }
+      const now = performance.now()
+      if (now - lastFetch < 4000) return
+      lastFetch = now
+      const bounds = map.getBounds()
+      const params = new URLSearchParams({
+        west: bounds.getWest().toFixed(4),
+        south: bounds.getSouth().toFixed(4),
+        east: bounds.getEast().toFixed(4),
+        north: bounds.getNorth().toFixed(4),
+      })
+      controller?.abort()
+      controller = new AbortController()
+      try {
+        const response = await fetch(`${API}/api/v1/towers?${params.toString()}`, { signal: controller.signal })
+        if (!response.ok) return
+        const body = await response.json()
+        source.setData(body as never)
+      } catch {
+        /* aborted, offline or rate-limited: keep whatever is drawn */
+      }
+    }
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void load(), 450)
+    }
+    map.on('moveend', schedule)
+    schedule()
+    return () => {
+      window.clearTimeout(timer)
+      controller?.abort()
+      map.off('moveend', schedule)
+    }
+  }, [ready])
 
   // Drone camera: low-altitude pitched view that orbits the focused place 360°.
   useEffect(() => {
@@ -611,6 +881,21 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       pressed.clear()
     }
   }, [ready, walk, focus])
+
+  // Keep the hologram pinned to its coordinate while the map moves.
+  useEffect(() => {
+    if (!ready || !inspect) return
+    const map = mapRef.current
+    if (!map) return
+    const lng = inspect.lng
+    const lat = inspect.lat
+    const reposition = () => {
+      const point = map.project([lng, lat])
+      setInspect((current) => (current ? { ...current, x: point.x, y: point.y } : current))
+    }
+    map.on('move', reposition)
+    return () => { map.off('move', reposition) }
+  }, [ready, inspect?.lng, inspect?.lat])
 
   const nudgeBearing = (delta: number) => {
     const map = mapRef.current
@@ -783,6 +1068,26 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
           </span>
           <span className={`walk-state ${walkHud.moving ? 'moving' : ''}`}>{walkHud.moving ? 'WALKING' : 'STANDING'}</span>
           <span className="walk-hint">W A S D / arrows move · Shift to jog · drag to look</span>
+        </div>
+      )}
+      {inspect && (
+        <div className="holo" style={{ left: inspect.x, top: inspect.y }}>
+          <div className="holo-head">
+            <span>◈ FEATURE SCAN</span>
+            <span className="holo-coord">{inspect.lat.toFixed(5)}, {inspect.lng.toFixed(5)}</span>
+          </div>
+          <div className="holo-body">
+            {inspect.rows.length === 0 && (
+              <span className="holo-empty">No mapped object under this pixel — satellite imagery only.</span>
+            )}
+            {inspect.rows.map((row) => (
+              <div key={`${row.label}-${row.value}`} className="holo-row">
+                <b>{row.label}</b>
+                <span>{row.value}</span>
+              </div>
+            ))}
+          </div>
+          <button className="holo-close" onClick={() => setInspect(null)} title="Close"><X size={10} /></button>
         </div>
       )}
       {asciiMode && ascii && (
