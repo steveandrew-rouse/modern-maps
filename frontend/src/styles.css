@@ -824,6 +824,8 @@ a { color: inherit; text-decoration: none; }
   position: absolute;
   right: 14px;
   bottom: 12px;
+  max-width: 52vw;
+  text-align: right;
   z-index: 3;
   display: inline-flex;
   align-items: center;
@@ -896,3 +898,103 @@ a { color: inherit; text-decoration: none; }
 .city-view .move-hint,
 .city-view .city-legend,
 .city-view .city-bar { z-index: 5; }
+
+/* ---- Augma-style 2D city chrome ---- */
+.city-mode { display: inline-flex; border: 1px solid rgba(143, 200, 230, 0.3); border-radius: 3px; overflow: hidden; }
+.city-mode button {
+  padding: 5px 9px;
+  border: 0;
+  background: rgba(6, 20, 29, 0.9);
+  color: #7f9fb0;
+  font: 700 9px/1 ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+.city-mode button.active { background: rgba(24, 74, 96, 0.95); color: #bff2ff; box-shadow: inset 0 -2px 0 #37d2ee; }
+.city-legend-toggle.active { border-color: rgba(143, 227, 255, 0.75); color: #eafaff; }
+
+.city-panel {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 226px;
+  max-height: calc(100% - 130px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid rgba(80, 190, 225, 0.32);
+  border-radius: 4px;
+  background: rgba(4, 15, 22, 0.93);
+  color: #cfe9f3;
+  font: 500 10px/1.45 ui-monospace, monospace;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 0 24px rgba(20, 120, 150, 0.14);
+}
+.city-panel-head {
+  color: #8ff0ff;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(80, 190, 225, 0.22);
+}
+.city-layers { top: 62px; left: 14px; }
+.city-legend-2d { top: 62px; right: 14px; }
+.city-layer-row { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+.city-layer-row input { accent-color: #37d2ee; width: 12px; height: 12px; }
+.city-panel-foot { color: #647f8f; font-size: 9px; line-height: 1.4; border-top: 1px solid rgba(80, 190, 225, 0.16); padding-top: 6px; }
+.city-legend-2d span { display: inline-flex; align-items: center; gap: 7px; }
+.city-legend-2d i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+
+.city-detail { top: 62px; right: 14px; width: 252px; }
+.city-detail-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: #7f9fb0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.city-detail-close:hover { color: #ffffff; }
+.city-detail-title { color: #ffffff; font-size: 13px; letter-spacing: 0.02em; }
+.city-detail-kind { color: #7fe3ff; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; }
+.city-detail-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; }
+.city-detail-rows div { display: flex; justify-content: space-between; gap: 10px; }
+.city-detail-rows span { color: #7f9fb0; }
+.city-detail-rows b { color: #d8f3ff; font-weight: 600; text-align: right; }
+.city-detail-views { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 4px; }
+.city-detail-views button {
+  padding: 5px 0;
+  border: 1px solid rgba(80, 190, 225, 0.35);
+  border-radius: 3px;
+  background: rgba(10, 34, 46, 0.9);
+  color: #9fd8ea;
+  font: 700 8px/1 ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.city-detail-views button:hover { border-color: rgba(143, 227, 255, 0.8); color: #eafaff; }
+.city-detail-sub { color: #8ff0ff; font-size: 9px; letter-spacing: 0.14em; margin-top: 4px; }
+.city-nearby { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.city-nearby li { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px dashed rgba(80, 190, 225, 0.14); padding-bottom: 3px; }
+.city-nearby span { color: #d8f3ff; }
+.city-nearby small { color: #6f8b9c; white-space: nowrap; }
+
+.city-2d-badge {
+  position: absolute;
+  left: 14px;
+  bottom: 16px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid rgba(80, 190, 225, 0.28);
+  border-radius: 2px;
+  color: #6f8b9c;
+  font: 700 8px/1 ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
