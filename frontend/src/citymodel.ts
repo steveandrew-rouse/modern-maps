@@ -64,28 +64,6 @@ export function hashUnit(seed: string): number {
   return ((hash >>> 0) % 1000) / 1000
 }
 
-/** Depth ramp for the flood scenario, shallow cyan to deep indigo (metres). */
-export function floodColour(depth: number): string {
-  const stops: [number, string][] = [
-    [0, '#8fe9ff'], [0.3, '#4fc3ff'], [0.8, '#2f7df0'], [1.5, '#2a49c9'], [3, '#4a2a9e'],
-  ]
-  if (depth <= 0) return stops[0][1]
-  for (let index = 1; index < stops.length; index += 1) {
-    if (depth <= stops[index][0]) {
-      const [a, colourA] = stops[index - 1]
-      const [b, colourB] = stops[index]
-      const t = (depth - a) / (b - a)
-      const mix = (offset: number) => {
-        const ca = parseInt(colourA.slice(1 + offset, 3 + offset), 16)
-        const cb = parseInt(colourB.slice(1 + offset, 3 + offset), 16)
-        return Math.round(ca + (cb - ca) * t).toString(16).padStart(2, '0')
-      }
-      return `#${mix(0)}${mix(2)}${mix(4)}`
-    }
-  }
-  return stops[stops.length - 1][1]
-}
-
 export const SECTOR_COLOURS: Record<string, string> = {
   residential: '#c8a97a', house: '#d9c3a0', apartments: '#c8a97a', terrace: '#d0b183', dormitory: '#c8a97a',
   commercial: '#6fa8ff', office: '#7fb2ff', retail: '#ffb347', shop: '#ffb347', supermarket: '#ffb347',

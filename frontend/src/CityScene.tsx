@@ -1,17 +1,15 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import type { CityModel } from './citymodel'
-import { SECTOR_COLOURS, floodColour, hashUnit, taggedHeight } from './citymodel'
+import { SECTOR_COLOURS, hashUnit, taggedHeight } from './citymodel'
 
 export type CityControls = { forward: number; strafe: number; turn: number; lift: number }
-export type CityEnv = { depth: number; rain: boolean }
 
 export type BuildingInfo = { name: string | null; height: number; estimated: boolean; sector: string }
 
 type Props = {
   model: CityModel
   controls: React.RefObject<CityControls>
-  env: React.RefObject<CityEnv>
   onReady: () => void
   onPick: (info: BuildingInfo | null, x: number, y: number) => void
 }
@@ -34,7 +32,7 @@ type Meta = BuildingInfo
  * roofs, street ribbons, water and a ground plane. No map tiles are involved,
  * so the satellite view can be hidden once this is ready.
  */
-export default function CityScene({ model, controls, env, onReady, onPick }: Props) {
+export default function CityScene({ model, controls, onReady, onPick }: Props) {
   const host = useRef<HTMLDivElement | null>(null)
   const pickRef = useRef(onPick)
   pickRef.current = onPick
@@ -222,40 +220,6 @@ export default function CityScene({ model, controls, env, onReady, onPick }: Pro
     grid.material.transparent = true
     scene.add(grid)
 
-    // Flood scenario water: a translucent sheet the whole city sits in, the
-    // depth ramp borrowed from Augma's flood maps. This is a scenario level,
-    // never a measured water height.
-    const floodMaterial = new THREE.MeshStandardMaterial({
-      color: floodColour(0.3),
-      transparent: true,
-      opacity: 0.52,
-      roughness: 0.12,
-      metalness: 0.25,
-      side: THREE.DoubleSide,
-    })
-    const flood = new THREE.Mesh(new THREE.PlaneGeometry(4200, 4200), floodMaterial)
-    flood.rotation.x = -Math.PI / 2
-    flood.position.y = -2
-    flood.visible = false
-    scene.add(flood)
-
-    // Rain: a point cloud that follows the camera, wrapping inside a 300 m box.
-    const RAIN_COUNT = 2400
-    const RAIN_BOX = 300
-    const rainPositions = new Float32Array(RAIN_COUNT * 3)
-    for (let index = 0; index < RAIN_COUNT; index += 1) {
-      rainPositions[index * 3] = (Math.random() - 0.5) * RAIN_BOX * 2
-      rainPositions[index * 3 + 1] = Math.random() * 260
-      rainPositions[index * 3 + 2] = (Math.random() - 0.5) * RAIN_BOX * 2
-    }
-    const rainGeometry = new THREE.BufferGeometry()
-    rainGeometry.setAttribute('position', new THREE.BufferAttribute(rainPositions, 3))
-    const rainMaterial = new THREE.PointsMaterial({
-      color: '#bfe9ff', size: 1.8, sizeAttenuation: false, transparent: true, opacity: 0.45,
-    })
-    const rain = new THREE.Points(rainGeometry, rainMaterial)
-    rain.visible = false
-    scene.add(rain)
 
     // --- free-fly camera --------------------------------------------------
     let yaw = Math.PI * 0.12
@@ -363,28 +327,6 @@ export default function CityScene({ model, controls, env, onReady, onPick }: Pro
       }
       if (state.lift) eye.y = Math.max(4, eye.y + state.lift * 55 * delta)
       applyCamera()
-
-      const weather = env.current ?? { depth: 0, rain: false }
-      flood.visible = weather.depth > 0.02
-      if (flood.visible) {
-        flood.position.y = weather.depth
-        floodMaterial.color.set(floodColour(weather.depth))
-      }
-      rain.visible = weather.rain
-      if (weather.rain) {
-        const attribute = rainGeometry.getAttribute('position') as THREE.BufferAttribute
-        const array = attribute.array as Float32Array
-        for (let index = 0; index < RAIN_COUNT; index += 1) {
-          array[index * 3 + 1] -= 95 * delta
-          if (array[index * 3 + 1] < weather.depth) {
-            array[index * 3] = (Math.random() - 0.5) * RAIN_BOX * 2
-            array[index * 3 + 1] = 200 + Math.random() * 70
-            array[index * 3 + 2] = (Math.random() - 0.5) * RAIN_BOX * 2
-          }
-        }
-        attribute.needsUpdate = true
-        rain.position.set(eye.x, 0, eye.z)
-      }
       renderer.render(scene, camera)
       if (!announced) {
         announced = true
@@ -403,10 +345,6 @@ export default function CityScene({ model, controls, env, onReady, onPick }: Pro
       canvas.removeEventListener('click', onClick)
       geometry.dispose()
       material.dispose()
-      flood.geometry.dispose()
-      floodMaterial.dispose()
-      rainGeometry.dispose()
-      rainMaterial.dispose()
       ground.geometry.dispose()
       ground.material.dispose()
       grid.geometry.dispose()
@@ -415,7 +353,7 @@ export default function CityScene({ model, controls, env, onReady, onPick }: Pro
       if (canvas.parentElement === element) element.removeChild(canvas)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [model, controls, env])
+  }, [model, controls])
 
   return <div className="city-scene" ref={host} />
 }

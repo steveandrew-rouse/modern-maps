@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
 import { ArrowLeft, Building2, Compass, Layers3, MapPin, Move3d } from 'lucide-react'
-import CityScene, { type BuildingInfo, type CityControls, type CityEnv } from './CityScene'
-import { fetchCityModel, floodColour, taggedHeight, type CityModel } from './citymodel'
+import CityScene, { type BuildingInfo, type CityControls } from './CityScene'
+import { fetchCityModel, taggedHeight, type CityModel } from './citymodel'
 
 export type CityTarget = { name: string; lat: number; lng: number; kind?: string }
 
@@ -43,9 +43,6 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
   const container = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const pad = useRef<CityControls>({ forward: 0, strafe: 0, turn: 0, lift: 0 })
-  const env = useRef<CityEnv>({ depth: 0, rain: false })
-  const [depth, setDepth] = useState(0)
-  const [rain, setRain] = useState(false)
   const [model, setModel] = useState<CityModel | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
@@ -122,10 +119,6 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
     }
   }, [onClose])
 
-  useEffect(() => {
-    env.current = { depth, rain }
-  }, [depth, rain])
-
   const handleReady = useCallback(() => {
     setBuilt(true)
     // The 3D city is drawn from OSM geometry, so the basemap has nothing left to show.
@@ -149,7 +142,6 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
         <CityScene
           model={model}
           controls={pad}
-          env={env}
           onReady={handleReady}
           onPick={(info, x, y) => setInspect({ info, x, y })}
         />
@@ -202,42 +194,6 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
         </aside>
       )}
 
-      {built && (
-        <aside className="flood-panel">
-          <div className="flood-head">
-            <span>◈ FLOOD SCENARIO</span>
-            <small>SIMULATED</small>
-          </div>
-          <label className="flood-depth">
-            <span>Water depth</span>
-            <b style={{ color: floodColour(depth) }}>{depth.toFixed(1)} m</b>
-            <input
-              type="range"
-              min={0}
-              max={3}
-              step={0.1}
-              value={depth}
-              onChange={(event) => setDepth(Number(event.target.value))}
-              aria-label="Simulated flood depth in metres"
-            />
-          </label>
-          <div className="flood-ramp" aria-hidden>
-            <i style={{ background: floodColour(0.15) }} />
-            <i style={{ background: floodColour(0.6) }} />
-            <i style={{ background: floodColour(1.2) }} />
-            <i style={{ background: floodColour(2.2) }} />
-            <i style={{ background: floodColour(3) }} />
-          </div>
-          <div className="flood-scale"><span>0 m</span><span>1.5 m</span><span>3 m</span></div>
-          <button className={`flood-rain ${rain ? 'active' : ''}`} onClick={() => setRain(!rain)}>
-            ◍ RAIN {rain ? 'ON' : 'OFF'}
-          </button>
-          <small className="flood-note">
-            A hypothetical water level over real OSM ground. This is a what-if scenario, not an observed flood forecast.
-          </small>
-        </aside>
-      )}
-
       <div className="move-pad" aria-label="Movement pad">
         <button {...hold('forward', 1)} title="Forward">▲</button>
         <button {...hold('turn', -1)} title="Turn left"><Compass size={12} /></button>
@@ -271,7 +227,7 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
       )}
 
       <div className="city-foot">
-        <MapPin size={10} /> {city.name} · OSM footprints, heights and streets meshed in 3D · flood level is simulated · not photogrammetry
+        <MapPin size={10} /> {city.name} · OSM footprints, heights and streets meshed in 3D · procedural massing, not photogrammetry
       </div>
     </div>
   )

@@ -127,8 +127,6 @@ Signal record:
 
 **City view.** Clicking a city or town label (`city`/`town` places from the vector tiles) opens a full-screen page that builds that place's centre as a real 3D scene in Three.js, from scratch: every OSM building footprint is extruded to its tagged `height` or `building:levels`, capped with a roof, and painted by building class (residential, commercial, industrial, civic, education, health, religious, unmapped). Streets become road ribbons by class, water polygons are drawn flat, and a metric grid replaces the basemap. The satellite view is shown only while the model loads, then it is removed, so nothing of the 2D map remains behind the 3D city. Drag to look, `W A S D` to move, `Q`/`E` to turn, `R`/`F` to climb, wheel to close in, and the on-screen pad does the same. Clicking a building opens the city scan panel with its name, sector and height, flagging heights that OSM does not tag.
 
-**Flood scenario.** The city page carries a flood slider (0–3 m) that raises a translucent water sheet over the streets, coloured by depth from shallow cyan to deep indigo, plus a rain toggle with falling rain particles. Both are plainly labelled `SIMULATED`: the water level is a what-if scenario over real OSM ground, not an observed or forecast flood.
-
 **Drone camera.** The `DRONE` button drops the camera to ~15.2 zoom at 68° pitch over the focused place and orbits it through a full 360°, pausing while you drag, scroll or zoom and resuming after three seconds. The HUD shows `ALT` (zoom) and `BRG` (bearing) with manual rotate (◀ ▶), climb/descend (▲ ▼) and an ORBIT toggle for hands-on control.
 
 **ASCII projection.** The `ASCII` button renders the current map view as a character grid sampled from the live canvas. Clicking any cell un-projects that pixel to WGS84 coordinates, drops a locator pin, and lists the nearest landmarks and live signals within range.
@@ -208,7 +206,6 @@ Pages cannot execute Python, so a Pages-only deployment shows the UI shell with 
 - The analyst is deterministic and grounded: it composes text from the current snapshot, cites records, and uses no language model.
 - The 3D landmark models are procedural interpretations, not measured or photogrammetric reconstructions.
 - City view footprints, street centrelines and tagged heights are real OSM data. Buildings with no `height`/`building:levels` tag get an estimated height from footprint size, and the city scan panel marks those as estimated.
-- The city flood depth and rain are simulated scenarios, not an observed or forecast flood.
 - Nothing here reconstructs objects photogrammetrically from satellite pixels. Buildings, roads, bridges and dams are vector data (OSM/OpenFreeMap and a curated dam list); anything not in that data is simply absent.
 - There are no interiors beyond the eight procedural landmark models, and no underground pipelines or utility networks — that data is not published openly for India, so none is invented.
 - Bridge deck elevation is a cartographic shadow effect; dam coordinates are rounded to roughly 1 km; dam heights are published maximum structure heights.
