@@ -12,7 +12,8 @@ import LandmarkViewer from './LandmarkViewer'
 import AircraftViewer from './AircraftViewer'
 import CityView, { type CityTarget } from './CityView'
 import { addPlaneIcons, liveryFor } from './airlines'
-import { DAM_BY_ID, damsGeoJSON } from './infrastructure'
+import { DAM_BY_ID, DAMS, damsGeoJSON } from './infrastructure'
+import { fetchNetworkLocation, searchPlaces, type NetworkLocation, type PlaceHit } from './search'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 const LAYER_ORDER: Layer[] = ['earthquake', 'alert', 'weather', 'air', 'flight']
@@ -404,13 +405,28 @@ function toFeatureCollection(signals: Signal[]) {
   }
 }
 
-function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, walk, globe, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onSelectDam, onSelectCity, onPick }: {
+type MapFly = { lng: number; lat: number; zoom: number; nonce: number }
+
+type SearchEntry = {
+  key: string
+  name: string
+  detail: string
+  lat: number
+  lng: number
+  zoom: number
+  kind: 'signal' | 'landmark' | 'dam' | 'place'
+  id?: string
+}
+
+function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, home, fly, drone, walk, globe, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onSelectDam, onSelectCity, onPick }: {
   signals: Signal[]
   activeLayers: Layer[]
   selectedId: string | null
   overlays: Overlays
   mode: '2d' | '3d'
   focus: [number, number]
+  home: NetworkLocation | null
+  fly: MapFly | null
   drone: boolean
   walk: boolean
   globe: boolean
@@ -435,6 +451,7 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   const [walkHud, setWalkHud] = useState({ lat: 0, lng: 0, heading: 0, moving: false, distance: 0 })
   const [inspect, setInspect] = useState<{ lng: number; lat: number; x: number; y: number; rows: InspectRow[] } | null>(null)
   const exaggerationRef = useRef(1.3)
+  const homeApplied = useRef(false)
   orbitRef.current = orbit
 
   useEffect(() => {
@@ -442,8 +459,8 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     const map = new maplibregl.Map({
       container: container.current,
       style: MAP_STYLE,
-      center: [78.9, 22.4],
-      zoom: 4.1,
+      center: home ? [home.lng, home.lat] : [78.9, 22.4],
+      zoom: home ? 9.4 : 4.1,
       pitch: 50,
       bearing: -8,
       minZoom: 2.6,
@@ -1205,6 +1222,36 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.easeTo({ center: focus, zoom: Math.max(map.getZoom(), 5.6), duration: 900 })
   }, [ready, focus, drone])
 
+  // Open on this network's approximate position once the IP lookup answers.
+  useEffect(() => {
+    if (!ready || !home || homeApplied.current) return
+    homeApplied.current = true
+    mapRef.current?.easeTo({ center: [home.lng, home.lat], zoom: 9.4, pitch: 46, duration: 1600 })
+  }, [ready, home])
+
+  // A search result explicitly moves the camera, wherever it is in the world.
+  useEffect(() => {
+    if (!ready || !fly) return
+    mapRef.current?.easeTo({ center: [fly.lng, fly.lat], zoom: fly.zoom, pitch: 42, duration: 1400 })
+  }, [ready, fly])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!ready || !map || !home) return
+    const element = document.createElement('div')
+    element.className = 'home-marker'
+    const label = document.createElement('span')
+    label.className = 'home-marker-label'
+    label.textContent = `NETWORK LOCATION${home.city ? ` · ${home.city}` : ''}`
+    const dot = document.createElement('span')
+    dot.className = 'home-marker-dot'
+    element.append(dot, label)
+    const marker = new maplibregl.Marker({ element, anchor: 'left' })
+      .setLngLat([home.lng, home.lat])
+      .addTo(map)
+    return () => { marker.remove() }
+  }, [ready, home])
+
   // ASCII projection of the rendered map; click a cell to locate that point.
   useEffect(() => {
     if (!asciiMode || !ready) return
@@ -1462,6 +1509,12 @@ function App() {
   const [detailTab, setDetailTab] = useState<DetailTab>('view')
   const [picked, setPicked] = useState<{ lat: number; lng: number } | null>(null)
   const [newsLang, setNewsLang] = useState<string | null>(null)
+  const [home, setHome] = useState<NetworkLocation | null>(null)
+  const [fly, setFly] = useState<MapFly | null>(null)
+  const [searchResults, setSearchResults] = useState<PlaceHit[]>([])
+  const [searchBusy, setSearchBusy] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchOpen, setSearchOpen] = useState(false)
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000)
@@ -1488,6 +1541,41 @@ function App() {
     const timer = setInterval(() => void load(), 60_000)
     return () => clearInterval(timer)
   }, [load])
+
+  // Default view: this network's coarse location, from its public IP.
+  useEffect(() => {
+    let cancelled = false
+    fetchNetworkLocation()
+      .then((next) => { if (!cancelled) setHome(next) })
+      .catch(() => { /* the fallback view stays when the lookup is unavailable */ })
+    return () => { cancelled = true }
+  }, [])
+
+  // Type-ahead: local signals and places instantly, global geocoding on a pause.
+  useEffect(() => {
+    const needle = query.trim()
+    if (needle.length < 2) {
+      setSearchResults([])
+      setSearchError(null)
+      setSearchBusy(false)
+      return
+    }
+    let cancelled = false
+    setSearchBusy(true)
+    const timer = window.setTimeout(() => {
+      searchPlaces(needle)
+        .then((hits) => {
+          if (cancelled) return
+          setSearchResults(hits)
+          setSearchError(null)
+        })
+        .catch((cause: unknown) => {
+          if (!cancelled) setSearchError(cause instanceof Error ? cause.message : 'Place search unavailable')
+        })
+        .finally(() => { if (!cancelled) setSearchBusy(false) })
+    }, 420)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [query])
 
   const signals = snapshot?.signals ?? []
   const sourcesOk = snapshot ? snapshot.sources.filter((source) => source.ok).length : 0
@@ -1517,8 +1605,8 @@ function App() {
   const landmark = landmarkId ? LANDMARK_BY_ID.get(landmarkId) ?? null : null
   const dam = damId ? DAM_BY_ID.get(damId) ?? null : null
   const focus = useMemo<[number, number]>(
-    () => (landmark ? [landmark.lng, landmark.lat] : [78.9, 22.4]),
-    [landmark],
+    () => (landmark ? [landmark.lng, landmark.lat] : home ? [home.lng, home.lat] : [78.9, 22.4]),
+    [landmark, home],
   )
 
   const openLandmark = (id: string) => {
@@ -1542,6 +1630,82 @@ function App() {
     ? signals.filter((signal) => signal.lat !== null && signal.lng !== null
         && Math.abs(signal.lat - picked.lat) < 1.4 && Math.abs((signal.lng as number) - picked.lng) < 1.4)
     : []
+
+  const signalEntries = useMemo<SearchEntry[]>(() => {
+    const needle = query.trim().toLowerCase()
+    if (needle.length < 2) return []
+    return signals
+      .filter((signal) => `${signal.title} ${signal.place} ${signal.provider}`.toLowerCase().includes(needle))
+      .slice(0, 5)
+      .map((signal) => ({
+        key: `signal-${signal.id}`,
+        name: signal.title,
+        detail: `${signal.place} · ${signal.provider}`,
+        lat: signal.lat ?? 0,
+        lng: signal.lng ?? 0,
+        zoom: 6,
+        kind: 'signal' as const,
+        id: signal.id,
+      }))
+  }, [signals, query])
+
+  const placeEntries = useMemo<SearchEntry[]>(() => {
+    const needle = query.trim().toLowerCase()
+    if (needle.length < 2) return []
+    const results: SearchEntry[] = []
+    for (const entry of LANDMARKS) {
+      if (`${entry.name} ${entry.city} ${entry.state}`.toLowerCase().includes(needle)) {
+        results.push({
+          key: `landmark-${entry.id}`, name: entry.name,
+          detail: `Landmark · ${entry.city}, ${entry.state}`,
+          lat: entry.lat, lng: entry.lng, zoom: 15, kind: 'landmark', id: entry.id,
+        })
+      }
+    }
+    for (const entry of DAMS) {
+      if (`${entry.name} ${entry.river} ${entry.state}`.toLowerCase().includes(needle)) {
+        results.push({
+          key: `dam-${entry.id}`, name: entry.name,
+          detail: `Dam · ${entry.river}, ${entry.state}`,
+          lat: entry.lat, lng: entry.lng, zoom: 12.5, kind: 'dam', id: entry.id,
+        })
+      }
+    }
+    return results.slice(0, 6)
+  }, [query])
+
+  const remoteEntries = useMemo<SearchEntry[]>(
+    () => searchResults.map((hit) => ({
+      key: `place-${hit.lat}-${hit.lng}-${hit.name}`,
+      name: hit.name,
+      detail: `${hit.kind} · ${hit.display_name}`,
+      lat: hit.lat, lng: hit.lng, zoom: 11.5, kind: 'place' as const,
+    })),
+    [searchResults],
+  )
+
+  const goToCoords = (lng: number, lat: number, zoom: number) =>
+    setFly((current) => ({ lng, lat, zoom, nonce: (current?.nonce ?? 0) + 1 }))
+
+  const takeEntry = (entry: SearchEntry) => {
+    if (entry.kind === 'signal' && entry.id) setSelectedId(entry.id)
+    if (entry.kind === 'landmark' && entry.id) openLandmark(entry.id)
+    if (entry.kind === 'dam' && entry.id) setDamId(entry.id)
+    if (entry.kind !== 'signal') goToCoords(entry.lng, entry.lat, entry.zoom)
+    setQuery('')
+    setSearchOpen(false)
+  }
+
+  const onSearchKeyDown = (event: { key: string; currentTarget: HTMLInputElement }) => {
+    if (event.key === 'Escape') {
+      setSearchOpen(false)
+      event.currentTarget.blur()
+      return
+    }
+    if (event.key !== 'Enter') return
+    const first = signalEntries[0] ?? placeEntries[0] ?? remoteEntries[0]
+    if (first) takeEntry(first)
+  }
 
   const toggleLayer = (layer: Layer) =>
     setActiveLayers((current) => current.includes(layer) ? current.filter((item) => item !== layer) : [...current, layer])
@@ -1574,7 +1738,7 @@ function App() {
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark"><Globe2 size={16} /></span>
-          <span className="brand-name">INDIA AI <b>OS</b> <em>MAPS</em></span>
+          <span className="brand-name">MODERN <b>MAP</b></span>
         </div>
         <nav className="nav-tabs">
           <button className={`nav-tab ${tab === 'all' ? 'active' : ''}`} onClick={() => setTab('all')}>OVERVIEW</button>
@@ -1591,9 +1755,60 @@ function App() {
           </button>
         </nav>
         <div className="top-actions">
-          <div className="search-inline">
-            <Search size={13} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter signals, cities, providers" />
+          <div className="search-wrap">
+            <div className="search-inline">
+              <Search size={13} />
+              <input
+                value={query}
+                onChange={(event) => { setQuery(event.target.value); setSearchOpen(true) }}
+                onFocus={() => setSearchOpen(true)}
+                onBlur={() => window.setTimeout(() => setSearchOpen(false), 160)}
+                onKeyDown={onSearchKeyDown}
+                placeholder="Search any place, city or signal"
+              />
+              {searchBusy && <span className="search-busy">…</span>}
+            </div>
+            {searchOpen && query.trim().length >= 2 && (
+              <div className="search-results">
+                {signalEntries.length > 0 && (
+                  <div className="search-group">
+                    <div className="search-group-head">LIVE SIGNALS</div>
+                    {signalEntries.map((entry) => (
+                      <button key={entry.key} className="search-hit" onClick={() => takeEntry(entry)}>
+                        <b>{entry.name}</b>
+                        <small>{entry.detail}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {placeEntries.length > 0 && (
+                  <div className="search-group">
+                    <div className="search-group-head">LANDMARKS &amp; DAMS</div>
+                    {placeEntries.map((entry) => (
+                      <button key={entry.key} className="search-hit" onClick={() => takeEntry(entry)}>
+                        <b>{entry.name}</b>
+                        <small>{entry.detail}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="search-group">
+                  <div className="search-group-head">WORLD · OPENSTREETMAP</div>
+                  {remoteEntries.map((entry) => (
+                    <button key={entry.key} className="search-hit" onClick={() => takeEntry(entry)}>
+                      <b>{entry.name}</b>
+                      <small>{entry.detail}</small>
+                    </button>
+                  ))}
+                  {searchBusy && remoteEntries.length === 0 && <div className="search-note">Searching the world…</div>}
+                  {searchError && <div className="search-note">{searchError}</div>}
+                  {!searchBusy && !searchError && remoteEntries.length === 0
+                    && signalEntries.length === 0 && placeEntries.length === 0 && (
+                      <div className="search-note">No match. Try a city, landmark or region.</div>
+                    )}
+                </div>
+              </div>
+            )}
           </div>
           <span className={`chip ${sourcesOk === sourcesTotal && sourcesTotal > 0 ? 'ok' : 'warn'}`}>
             <i /> {sourcesOk}/{sourcesTotal || '—'} SOURCES
@@ -1609,7 +1824,12 @@ function App() {
         <div className="ws-tabs">
           <button className="ws-tab active">Main</button>
           <button className="ws-tab">+</button>
-          <span className="ws-scope">NATIONAL SCOPE · INDIA</span>
+          <span className="ws-scope">
+            {home
+              ? `NETWORK SPOT · ${[home.city, home.country].filter(Boolean).join(', ') || 'APPROXIMATE'} · ${home.accuracy}`
+              : 'LOCATING NETWORK SPOT…'}
+          </span>
+          <button className="ws-tab" onClick={() => home && goToCoords(home.lng, home.lat, 9.4)} title="Recentre on this network's location">LOCATE</button>
         </div>
         <div className="subbar-right">
           <span className="live-pill"><i /> LIVE PUBLIC FEEDS</span>
@@ -1667,6 +1887,8 @@ function App() {
               overlays={overlays}
               mode={mode}
               focus={focus}
+              home={home}
+              fly={fly}
               drone={drone}
               walk={walk}
               globe={globe}
@@ -1932,7 +2154,7 @@ function App() {
       {city && <CityView city={city} onClose={() => setCity(null)} />}
 
       <footer className="footer">
-        <span>INDIA AI OS MAPS · LIVE GEOSPATIAL INTELLIGENCE</span>
+        <span>MODERN MAP · LIVE GEOSPATIAL INTELLIGENCE</span>
         <span><Camera size={9} /> OSM ROADS, BRIDGES &amp; BUILDINGS · SIMULATED TRAFFIC &amp; CROWD</span>
         <span>NOT AN OFFICIAL GOVERNMENT PLATFORM</span>
       </footer>

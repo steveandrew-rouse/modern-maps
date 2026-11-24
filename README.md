@@ -1,6 +1,6 @@
-# PROJECT INDIA AI OS MAPS
+# MODERN MAP
 
-**Live India-first geospatial intelligence workspace** — real public feeds, satellite 3D terrain, provenance on every record.
+**Live geospatial workspace** — real public feeds, satellite 3D terrain, provenance on every record. The map opens on this network's approximate location and searches any place in the world.
 
 ![Dashboard](dashboard-final.png)
 

@@ -15,6 +15,7 @@ from .analyst import answer
 from .models import AnalystRequest, NewsItem, Signal, Snapshot, SourceStatus
 from .sources.airports import fetch_airport
 from .sources.citymodel import fetch_city
+from .sources.geocode import network_location, search_places
 from .sources.towers import fetch_towers, to_geojson
 
 log = logging.getLogger("india-ai-os")
@@ -161,6 +162,24 @@ def create_app(aggregator: Aggregator | None = None, *, load_feeds: bool = True)
                 return await fetch_airport(client, icao)
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=502, detail=f"OpenSky unavailable: {exc}") from exc
+
+    @app.get("/api/v1/geocode")
+    async def get_geocode(q: str = Query(min_length=2, max_length=120)) -> list[dict]:
+        """Free-text place search, proxied to OpenStreetMap's Nominatim service."""
+        async with httpx.AsyncClient() as client:
+            try:
+                return await search_places(client, q)
+            except (httpx.HTTPError, ValueError) as exc:
+                raise HTTPException(status_code=502, detail=f"Place search unavailable: {exc}") from exc
+
+    @app.get("/api/v1/locate")
+    async def get_network_location() -> dict:
+        """Approximate location of this network, from its public IP address."""
+        async with httpx.AsyncClient() as client:
+            try:
+                return await network_location(client)
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                raise HTTPException(status_code=502, detail=f"Location lookup unavailable: {exc}") from exc
 
     @app.get("/api/v1/route")
     async def get_route(
