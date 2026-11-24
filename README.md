@@ -117,7 +117,7 @@ Signal record:
 
 ## 7. 3D map, ASCII locator and landmarks
 
-**3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) and appear from zoom 14. Every building uses its own mapped `colour` from the tile data; buildings without a mapped colour fall back to a cyan-to-violet height ramp.
+**3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) from zoom 13.6, with non-3D buildings filtered out. Each building is coloured by its own height band (deep blue to teal, amber, orange, red, violet, white) at 74% opacity, so blocks stay individually readable over the imagery instead of merging into one mass.
 
 **Drone camera.** The `DRONE` button drops the camera to ~15.2 zoom at 68° pitch over the focused place and orbits it through a full 360°, pausing while you drag, scroll or zoom and resuming after three seconds. The HUD shows `ALT` (zoom) and `BRG` (bearing) with manual rotate (◀ ▶), climb/descend (▲ ▼) and an ORBIT toggle for hands-on control.
 

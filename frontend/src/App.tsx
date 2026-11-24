@@ -70,16 +70,19 @@ const MAP_STYLE: StyleSpecification = {
     },
     {
       id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building',
-      minzoom: 13.2,
+      minzoom: 13.6,
+      filter: ['!=', ['get', 'hide_3d'], true],
       paint: {
-        // Each building keeps its own mapped colour; unmapped ones fall back to a depth ramp.
-        'fill-extrusion-color': ['case', ['has', 'colour'], ['to-color', ['get', 'colour'], '#8aa0a0'], [
-          'interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 12],
-          0, '#0d3d52', 30, '#1a7f8e', 90, '#37c1b6', 220, '#9af3ff',
-        ]],
-        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 10],
+        // Each building takes its own colour from its height band, so blocks stay
+        // distinct instead of merging into one slab.
+        'fill-extrusion-color': [
+          'interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 10],
+          0, '#0e4a6b', 6, '#1f8f9c', 12, '#45d1b3', 20, '#f2c94c',
+          32, '#f2994a', 50, '#eb5757', 90, '#bb6bd9', 160, '#e6f7ff',
+        ],
+        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
         'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-        'fill-extrusion-opacity': 0.86,
+        'fill-extrusion-opacity': 0.74,
         'fill-extrusion-vertical-gradient': true,
       },
     },
@@ -148,6 +151,7 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       attributionControl: false,
     })
     mapRef.current = map
+    map.on('error', (event) => console.error('MAP ERROR', event.error?.message ?? event))
     map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
     map.on('load', () => {
@@ -479,11 +483,11 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   }, [ready, overlays.crowd, focus])
 
   useEffect(() => {
-    if (!ready) return
+    if (!ready || drone) return
     const map = mapRef.current
     if (!map) return
     map.easeTo({ center: focus, zoom: Math.max(map.getZoom(), 5.6), duration: 900 })
-  }, [ready, focus])
+  }, [ready, focus, drone])
 
   // ASCII projection of the rendered map; click a cell to locate that point.
   useEffect(() => {
