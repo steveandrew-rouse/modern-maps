@@ -2,8 +2,6 @@
 
 **Live geospatial workspace** — real public feeds, satellite 3D terrain, provenance on every record. The map opens on this network's approximate location and searches any place in the world.
 
-![Dashboard](dashboard-final.png)
-
 ## 1. What this is
 
 A working intelligence dashboard for India: a 3D satellite map of the country with live overlays, a real-time signal rail, a live headline wire, a grounded analyst and per-connector health.
@@ -133,7 +131,6 @@ Signal record:
 
 The 3D model is parked behind a `3D CITY` toggle rather than shown by default. Switching to it hides the 2D map and meshes the place's centre in Three.js from scratch: every OSM footprint extruded to its tagged `height` or `building:levels`, capped with a roof and painted by building class, streets as road ribbons, water flat, on a metric grid. Drag to look, `W A S D` to move, `Q`/`E` to turn, `R`/`F` to climb, wheel to close in, and the on-screen pad does the same. Clicking a building opens its scan panel with name, sector and height, flagging heights OSM does not tag. Switching back to `2D MAP` restores the city map.
 
-![Augma-style city view](city-2d.png)
 
 **Drone camera.** The `DRONE` button drops the camera to ~15.2 zoom at 68° pitch over the focused place and orbits it through a full 360°, pausing while you drag, scroll or zoom and resuming after three seconds. The HUD shows `ALT` (zoom) and `BRG` (bearing) with manual rotate (◀ ▶), climb/descend (▲ ▼) and an ORBIT toggle for hands-on control.
 
@@ -150,7 +147,6 @@ The 3D model is parked behind a `3D CITY` toggle rather than shown by default. S
 
 The 3D models are procedural interpretations built from primitives, not survey-grade or photogrammetric models. The Taj Mahal imagery in `frontend/public/landmarks/` is AI-generated illustration and is captioned as such.
 
-![ASCII projection](ascii-view.png)
 
 ## 8. Roads, walk mode and aircraft
 
@@ -180,7 +176,6 @@ The 3D models are procedural interpretations built from primitives, not survey-g
 
 **Aircraft.** Live OpenSky positions now render as airliner silhouettes instead of dots: each is rotated to its reported true track, and painted with the livery of the operator derived from the ICAO callsign prefix (Air India, IndiGo, SpiceJet, Air India Express, Akasa, and 15 international carriers, in `frontend/src/airlines.ts`). Selecting a flight opens a procedural 3D narrowbody in that livery with altitude, speed and heading. OpenSky's public state vectors carry no airframe type or registration, so the model is representative, not the exact airframe.
 
-![Walk mode at the Taj Mahal](walk-mode.png)
 
 ## 9. Hosting
 
@@ -229,3 +224,7 @@ Pages cannot execute Python, so a Pages-only deployment shows the UI shell with 
 - Every source's licence and refresh cadence is visible in the UI and `/api/v1/status`.
 
 Product blueprint, roadmap, connector plan and governance rules live in `docs/`.
+
+## License
+
+MIT © 2026 Starly Industries. See [LICENSE](LICENSE).
