@@ -1,32 +1,57 @@
-export type Layer = {
-  id: string
-  label: string
-  description: string
-  enabled: boolean
-}
+export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
 
-export type DemoEvent = {
+export type Layer = 'earthquake' | 'alert' | 'weather' | 'air' | 'flight'
+
+export type Signal = {
   id: string
-  category: string
+  layer: Layer
   title: string
-  city: string
-  state: string
-  lat: number
-  lng: number
-  severity: 'low' | 'medium' | 'high'
-  status: 'SIMULATED'
-  confidence: number | null
-  summary: string
+  severity: Severity
+  lat: number | null
+  lng: number | null
+  place: string
+  time: string | null
+  provider: string
   source: string
-  observed_at: string | null
+  url: string | null
+  detail: string | null
+  metrics: Record<string, string | number>
 }
 
-export type DashboardSummary = {
+export type NewsItem = {
+  id: string
+  title: string
+  url: string
+  source: string
+  published: string | null
+}
+
+export type SourceStatus = {
+  id: string
+  name: string
+  provider: string
+  license: string
+  url: string
+  ok: boolean
+  records: number
+  last_success: string | null
+  last_error: string | null
+  cadence_seconds: number
+}
+
+export type Snapshot = {
+  generated_at: string
+  signals: Signal[]
+  news: NewsItem[]
+  counts: Record<string, number>
+  sources: SourceStatus[]
+}
+
+export type AnalystResponse = {
   mode: string
-  is_live: boolean
-  live_sources: number
-  demo_scenarios: number
-  layer_groups: number
-  last_updated: string
-  notice: string
+  is_llm: boolean
+  grounded_at: string
+  answer: string
+  evidence: { id: string; title: string; provider: string; severity: string; url: string | null }[]
+  limitations: string[]
 }

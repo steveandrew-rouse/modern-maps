@@ -1,81 +1,113 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import Literal
-from fastapi import FastAPI, HTTPException, Query
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
-from .data import DEMO_EVENTS, LAYERS, dashboard_summary
+from .aggregate import Aggregator
+from .analyst import answer
+from .models import AnalystRequest, NewsItem, Signal, Snapshot, SourceStatus
 
-app = FastAPI(
-    title="India AI OS Maps API",
-    version="0.1.0",
-    description=(
-        "Local demonstration API for the India AI OS Maps geospatial intelligence concept. "
-        "All records are synthetic; no official or live data feeds are connected."
-    ),
-)
+log = logging.getLogger("india-ai-os")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
+LAYERS = ("earthquake", "alert", "weather", "air", "flight")
+SEVERITIES = ("critical", "high", "medium", "low", "info")
 
 
-class AnalystRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=1000)
-    scope: Literal["india", "selected_region"] = "india"
+def create_app(aggregator: Aggregator | None = None, *, load_feeds: bool = True) -> FastAPI:
+    agg = aggregator or Aggregator()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.aggregator = agg
+        if load_feeds:
+            try:
+                await asyncio.wait_for(agg.refresh(), timeout=55)
+            except Exception as exc:  # noqa: BLE001 - endpoints report source health
+                log.warning("initial feed refresh failed: %s", exc)
+        task = asyncio.create_task(agg.loop())
+        try:
+            yield
+        finally:
+            task.cancel()
 
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "service": "india-ai-os-maps-api", "mode": "demo"}
-
-
-@app.get("/api/dashboard")
-def get_dashboard() -> dict:
-    return dashboard_summary()
-
-
-@app.get("/api/layers")
-def get_layers() -> dict:
-    return {"mode": "demo", "layers": LAYERS}
-
-
-@app.get("/api/events")
-def get_events(category: str | None = Query(default=None)) -> dict:
-    allowed = {layer["id"] for layer in LAYERS}
-    if category and category not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unknown category: {category}")
-    events = DEMO_EVENTS if category is None else [e for e in DEMO_EVENTS if e["category"] == category]
-    return {"mode": "demo", "count": len(events), "events": events}
-
-
-@app.post("/api/analyst")
-def ask_analyst(payload: AnalystRequest) -> dict:
-    """Transparent placeholder; replace with evidence-grounded retrieval/model orchestration."""
-    q = payload.question.lower()
-    if any(word in q for word in ("flood", "rain", "cyclone", "disaster")):
-        focus = "For a real hazard assessment, ingest timestamped official warnings and hydrology observations, verify the affected geography, and display the issuing agency and validity window."
-    elif any(word in q for word in ("traffic", "road", "rail", "metro", "transport")):
-        focus = "For transport analysis, connect an authorized traffic or transit feed, normalize its update cadence, and compare observations with a documented historical baseline."
-    elif any(word in q for word in ("energy", "power", "grid")):
-        focus = "For grid analysis, use utility-authorized aggregate telemetry and clearly distinguish measured load, estimates and simulated stress tests."
-    else:
-        focus = "A production analyst should retrieve relevant verified datasets, compare timestamps and geographic coverage, cite every source, and report uncertainty before making a recommendation."
-
-    return {
-        "mode": "DEMO_RULE_BASED_PLACEHOLDER",
-        "is_llm": False,
-        "answer": (
-            "This starter is not connected to live national datasets or a language model. "
-            "The current map contains synthetic scenarios only. " + focus
+    app = FastAPI(
+        title="India AI OS Maps API",
+        version="0.2.0",
+        description=(
+            "Live geospatial intelligence API for India. Aggregates public, key-free sources "
+            "(USGS, GDACS/UN OCHA, Open-Meteo, OpenSky, news RSS) with per-record provenance."
         ),
-        "evidence": [],
-        "limitations": [
-            "No live sources connected", "No predictive model validated", "No operational recommendation produced"
-        ],
-    }
+        lifespan=lifespan,
+    )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
+
+    def snapshot(request: Request) -> Snapshot:
+        return request.app.state.aggregator.snapshot
+
+    @app.get("/health")
+    def health(request: Request) -> dict:
+        snap = snapshot(request)
+        return {
+            "status": "ok",
+            "service": "india-ai-os-maps-api",
+            "version": "0.2.0",
+            "generated_at": snap.generated_at,
+            "sources_total": len(snap.sources),
+            "sources_ok": sum(1 for s in snap.sources if s.ok),
+            "signals": len(snap.signals),
+        }
+
+    @app.get("/api/v1/snapshot", response_model=Snapshot)
+    def get_snapshot(request: Request) -> Snapshot:
+        return snapshot(request)
+
+    @app.get("/api/v1/status", response_model=list[SourceStatus])
+    def get_status(request: Request) -> list[SourceStatus]:
+        return snapshot(request).sources
+
+    @app.get("/api/v1/signals", response_model=list[Signal])
+    def get_signals(
+        request: Request,
+        layer: str | None = Query(default=None),
+        severity: str | None = Query(default=None),
+        limit: int = Query(default=500, ge=1, le=2000),
+    ) -> list[Signal]:
+        if layer and layer not in LAYERS:
+            raise HTTPException(status_code=400, detail=f"Unknown layer: {layer}")
+        if severity and severity not in SEVERITIES:
+            raise HTTPException(status_code=400, detail=f"Unknown severity: {severity}")
+        signals = snapshot(request).signals
+        if layer:
+            signals = [s for s in signals if s.layer == layer]
+        if severity:
+            signals = [s for s in signals if s.severity == severity]
+        return signals[:limit]
+
+    @app.get("/api/v1/news", response_model=list[NewsItem])
+    def get_news(request: Request, limit: int = Query(default=40, ge=1, le=200)) -> list[NewsItem]:
+        return snapshot(request).news[:limit]
+
+    @app.post("/api/v1/refresh", response_model=Snapshot)
+    async def force_refresh(request: Request) -> Snapshot:
+        return await request.app.state.aggregator.refresh()
+
+    @app.post("/api/v1/analyst")
+    def ask_analyst(payload: AnalystRequest, request: Request) -> dict:
+        return answer(payload.question, snapshot(request))
+
+    return app
+
+
+app = create_app()
