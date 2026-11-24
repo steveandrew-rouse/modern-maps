@@ -72,10 +72,11 @@ const MAP_STYLE: StyleSpecification = {
       id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building',
       minzoom: 13.2,
       paint: {
-        'fill-extrusion-color': [
+        // Each building keeps its own mapped colour; unmapped ones fall back to a depth ramp.
+        'fill-extrusion-color': ['case', ['has', 'colour'], ['to-color', ['get', 'colour'], '#8aa0a0'], [
           'interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 12],
           0, '#0d3d52', 30, '#1a7f8e', 90, '#37c1b6', 220, '#9af3ff',
-        ],
+        ]],
         'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 10],
         'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
         'fill-extrusion-opacity': 0.86,
@@ -106,13 +107,14 @@ function toFeatureCollection(signals: Signal[]) {
   }
 }
 
-function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onPick }: {
+function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onPick }: {
   signals: Signal[]
   activeLayers: Layer[]
   selectedId: string | null
   overlays: Overlays
   mode: '2d' | '3d'
   focus: [number, number]
+  drone: boolean
   selectedLandmarkId: string | null
   asciiMode: boolean
   onSelectSignal: (id: string) => void
@@ -125,6 +127,10 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, s
   handlers.current = { onSelectSignal, onSelectLandmark, onPick }
   const [ready, setReady] = useState(false)
   const [ascii, setAscii] = useState<{ lines: string[]; coords: string } | null>(null)
+  const [orbit, setOrbit] = useState(true)
+  const orbitRef = useRef(true)
+  const [hud, setHud] = useState({ zoom: 0, bearing: 0 })
+  orbitRef.current = orbit
 
   useEffect(() => {
     if (!container.current || mapRef.current) return
@@ -326,6 +332,70 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, s
     }
   }, [ready, mode])
 
+  // Drone camera: low-altitude pitched view that orbits the focused place 360°.
+  useEffect(() => {
+    if (!ready || !drone) return
+    const map = mapRef.current
+    if (!map) return
+    map.easeTo({
+      pitch: 68,
+      zoom: Math.max(map.getZoom(), 15.2),
+      center: focus,
+      duration: 1200,
+    })
+    let frame = 0
+    let paused = false
+    let orbiting = false
+    let resumeTimer = 0
+    // Wait for the descent animation before orbiting: setBearing cancels an
+    // in-flight ease, which would leave the camera at country altitude.
+    const startTimer = window.setTimeout(() => { orbiting = true }, 1350)
+    const pause = () => {
+      paused = true
+      window.clearTimeout(resumeTimer)
+      resumeTimer = window.setTimeout(() => { paused = false }, 3000)
+    }
+    map.on('mousedown', pause)
+    map.on('touchstart', pause)
+    map.on('wheel', pause)
+    const tick = () => {
+      frame = requestAnimationFrame(tick)
+      if (orbiting && !paused && orbitRef.current) map.setBearing(map.getBearing() + 0.12)
+    }
+    tick()
+    return () => {
+      cancelAnimationFrame(frame)
+      window.clearTimeout(resumeTimer)
+      window.clearTimeout(startTimer)
+      map.off('mousedown', pause)
+      map.off('touchstart', pause)
+      map.off('wheel', pause)
+    }
+  }, [ready, drone, focus])
+
+  useEffect(() => {
+    if (!ready || !drone) return
+    const map = mapRef.current
+    if (!map) return
+    const update = () => setHud({ zoom: map.getZoom(), bearing: map.getBearing() })
+    update()
+    const timer = setInterval(update, 250)
+    return () => clearInterval(timer)
+  }, [ready, drone])
+
+  const nudgeBearing = (delta: number) => {
+    const map = mapRef.current
+    if (!map) return
+    setOrbit(false)
+    map.easeTo({ bearing: map.getBearing() + delta, duration: 450 })
+  }
+
+  const nudgeZoom = (delta: number) => {
+    const map = mapRef.current
+    if (!map) return
+    map.easeTo({ zoom: map.getZoom() + delta, duration: 450 })
+  }
+
   useEffect(() => {
     if (!ready) return
     const map = mapRef.current
@@ -465,6 +535,17 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, s
   return (
     <>
       <div className="map-canvas" ref={container} />
+      {drone && (
+        <div className="drone-hud">
+          <span className="drone-title"><Plane size={11} /> DRONE</span>
+          <button className={orbit ? 'active' : ''} onClick={() => setOrbit(!orbit)} title="Toggle 360° orbit">ORBIT</button>
+          <button onClick={() => nudgeBearing(-25)} title="Rotate left">◀</button>
+          <button onClick={() => nudgeBearing(25)} title="Rotate right">▶</button>
+          <button onClick={() => nudgeZoom(0.6)} title="Climb">▲</button>
+          <button onClick={() => nudgeZoom(-0.6)} title="Descend">▼</button>
+          <span className="drone-readout">ALT z{hud.zoom.toFixed(1)} · BRG {Math.round((hud.bearing % 360 + 360) % 360)}°</span>
+        </div>
+      )}
       {asciiMode && ascii && (
         <div className="ascii-shell">
           <div className="ascii-head">
@@ -616,6 +697,7 @@ function App() {
   const [layersOpen, setLayersOpen] = useState(true)
   const [placesOpen, setPlacesOpen] = useState(false)
   const [asciiMode, setAsciiMode] = useState(false)
+  const [drone, setDrone] = useState(false)
   const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false })
   const [analystText, setAnalystText] = useState('')
   const [analystBusy, setAnalystBusy] = useState(false)
@@ -794,6 +876,9 @@ function App() {
             <button className={`ascii-toggle ${asciiMode ? 'active' : ''}`} onClick={() => setAsciiMode(!asciiMode)} title="ASCII projection view">
               <Grid3x3 size={12} /> ASCII
             </button>
+            <button className={`ascii-toggle drone-toggle ${drone ? 'active' : ''}`} onClick={() => setDrone(!drone)} title="Drone camera mode">
+              <Plane size={12} /> DRONE
+            </button>
             <div className="seg" role="group" aria-label="Map view mode">
               <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>2D</button>
               <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>3D</button>
@@ -808,6 +893,7 @@ function App() {
               overlays={overlays}
               mode={mode}
               focus={focus}
+              drone={drone}
               selectedLandmarkId={landmarkId}
               asciiMode={asciiMode}
               onSelectSignal={setSelectedId}
