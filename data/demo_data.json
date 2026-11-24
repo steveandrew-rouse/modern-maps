@@ -1,0 +1,62 @@
+{
+  "layers": [
+    { "id": "transport", "label": "Transport", "description": "Road, rail, metro and logistics layers", "enabled": true },
+    { "id": "climate", "label": "Climate", "description": "Weather, rainfall and heat indicators", "enabled": true },
+    { "id": "disaster", "label": "Disaster", "description": "Hazard scenarios and preparedness overlays", "enabled": true },
+    { "id": "infrastructure", "label": "Infrastructure", "description": "Public infrastructure and asset condition", "enabled": true },
+    { "id": "water", "label": "Water", "description": "River basins, reservoirs and water availability", "enabled": true },
+    { "id": "agriculture", "label": "Agriculture", "description": "Crop, soil and agromet indicators", "enabled": true },
+    { "id": "energy", "label": "Energy", "description": "Generation, demand and grid resilience", "enabled": true }
+  ],
+  "events": [
+    {
+      "id": "demo-tn-001", "category": "disaster", "title": "Coastal inundation scenario",
+      "city": "Chennai", "state": "Tamil Nadu", "lat": 13.0827, "lng": 80.2707,
+      "severity": "high", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic exercise marker for testing coastal-risk workflows. Not a real warning.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-mh-001", "category": "transport", "title": "Urban mobility stress scenario",
+      "city": "Mumbai", "state": "Maharashtra", "lat": 19.076, "lng": 72.8777,
+      "severity": "medium", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic congestion scenario for testing transport dashboards. Not live traffic.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-as-001", "category": "climate", "title": "Heavy-rainfall monitoring scenario",
+      "city": "Guwahati", "state": "Assam", "lat": 26.1445, "lng": 91.7362,
+      "severity": "high", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic rainfall scenario for testing alert triage. Not an IMD forecast.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-ka-001", "category": "energy", "title": "Grid resilience exercise",
+      "city": "Bengaluru", "state": "Karnataka", "lat": 12.9716, "lng": 77.5946,
+      "severity": "low", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic energy continuity scenario for interface testing. Not utility telemetry.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-kl-001", "category": "water", "title": "River-basin observation exercise",
+      "city": "Kochi", "state": "Kerala", "lat": 9.9312, "lng": 76.2673,
+      "severity": "medium", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic water-resource marker for testing map layers. Not measured water data.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-ts-001", "category": "infrastructure", "title": "Asset inspection workflow",
+      "city": "Hyderabad", "state": "Telangana", "lat": 17.385, "lng": 78.4867,
+      "severity": "low", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic asset record for testing condition reports. Not an engineering inspection.",
+      "source": "Local demo fixture", "observed_at": null
+    },
+    {
+      "id": "demo-dl-001", "category": "agriculture", "title": "Agromet advisory workflow",
+      "city": "New Delhi", "state": "Delhi", "lat": 28.6139, "lng": 77.209,
+      "severity": "low", "status": "SIMULATED", "confidence": null,
+      "summary": "Synthetic agriculture workflow marker. Not an official agricultural advisory.",
+      "source": "Local demo fixture", "observed_at": null
+    }
+  ]
+}
