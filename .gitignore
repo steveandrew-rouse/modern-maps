@@ -12,3 +12,5 @@ dist/
 .vscode/
 api.log
 vite.log
+route.json
+apt.json
