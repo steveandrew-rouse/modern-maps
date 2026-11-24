@@ -10,6 +10,7 @@ import type { AnalystResponse, Layer, Severity, Signal, Snapshot } from './types
 import { LANDMARKS, LANDMARK_BY_ID, type Landmark } from './landmarks'
 import LandmarkViewer from './LandmarkViewer'
 import AircraftViewer from './AircraftViewer'
+import CityView, { type CityTarget } from './CityView'
 import { addPlaneIcons, liveryFor } from './airlines'
 import { DAM_BY_ID, damsGeoJSON } from './infrastructure'
 
@@ -252,6 +253,8 @@ for (const value of POI_CLASSES.culture) POI_COLOURS[value] = '#ffd166'
 for (const value of POI_CLASSES.transport) POI_COLOURS[value] = '#8fb8ff'
 for (const value of POI_CLASSES.health) POI_COLOURS[value] = '#ff8a8a'
 
+const SENSORS = ['none', 'crt', 'nvg', 'flir', 'noir'] as const
+
 const LANGUAGE_LABELS: Record<string, string> = {
   en: 'EN', Hindi: 'हिन्दी', Tamil: 'தமிழ்', Telugu: 'తెలుగు', Bengali: 'বাংলা',
   Malayalam: 'മലയാളം', Kannada: 'ಕನ್ನಡ', Gujarati: 'ગુજરાતી', Marathi: 'मराठी',
@@ -401,7 +404,7 @@ function toFeatureCollection(signals: Signal[]) {
   }
 }
 
-function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, walk, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onSelectDam, onPick }: {
+function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, walk, globe, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onSelectDam, onSelectCity, onPick }: {
   signals: Signal[]
   activeLayers: Layer[]
   selectedId: string | null
@@ -410,17 +413,19 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   focus: [number, number]
   drone: boolean
   walk: boolean
+  globe: boolean
   selectedLandmarkId: string | null
   asciiMode: boolean
   onSelectSignal: (id: string) => void
   onSelectLandmark: (id: string) => void
   onSelectDam: (id: string) => void
+  onSelectCity: (city: CityTarget) => void
   onPick: (lat: number, lng: number) => void
 }) {
   const container = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const handlers = useRef({ onSelectSignal, onSelectLandmark, onSelectDam, onPick })
-  handlers.current = { onSelectSignal, onSelectLandmark, onSelectDam, onPick }
+  const handlers = useRef({ onSelectSignal, onSelectLandmark, onSelectDam, onSelectCity, onPick })
+  handlers.current = { onSelectSignal, onSelectLandmark, onSelectDam, onSelectCity, onPick }
   const [ready, setReady] = useState(false)
   const [ascii, setAscii] = useState<{ lines: string[]; coords: string } | null>(null)
   const [orbit, setOrbit] = useState(true)
@@ -691,6 +696,19 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       paint: { 'text-color': '#e8f4ff', 'text-halo-color': '#04121b', 'text-halo-width': 1.2 },
     })
 
+    // City and town labels double as the entry point to the full city page view.
+    map.addLayer({
+      id: 'lyr-place', type: 'symbol', source: 'openmaptiles', 'source-layer': 'place', minzoom: 4,
+      filter: ['in', ['get', 'class'], ['literal', ['city', 'town']]],
+      layout: {
+        'text-field': ['coalesce', ['get', 'name:latin'], ['get', 'name']],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 4, 11, 8, 13, 12, 15],
+        'text-font': ['Noto Sans Regular'],
+        'text-letter-spacing': 0.08,
+      },
+      paint: { 'text-color': '#eaf6ff', 'text-halo-color': '#04121b', 'text-halo-width': 1.6 },
+    })
+
     // Projected track for the selected aircraft (heading ray, not a filed route).
     map.addLayer({
       id: 'lyr-flight-track', type: 'line', source: 'flight-tracks',
@@ -744,6 +762,16 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     })
     map.on('mouseenter', 'lyr-tower', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'lyr-tower', () => { map.getCanvas().style.cursor = '' })
+
+    map.on('click', 'lyr-place', (event) => {
+      const feature = event.features?.[0]
+      const name = String(feature?.properties?.name ?? '')
+      const coordinates = (feature?.geometry as { coordinates?: [number, number] } | undefined)?.coordinates
+      if (!name || !coordinates) return
+      handlers.current.onSelectCity({ name, lng: coordinates[0], lat: coordinates[1] })
+    })
+    map.on('mouseenter', 'lyr-place', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'lyr-place', () => { map.getCanvas().style.cursor = '' })
 
     // Click anywhere: describe whatever the style is drawing under the cursor.
     map.on('click', (event) => {
@@ -832,6 +860,44 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       map.off('zoom', onZoom)
     }
   }, [ready])
+
+  // Globe projection with live precipitation radar for the planet-scale view.
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map) return
+    map.setProjection({ type: globe ? 'globe' : 'mercator' })
+    if (!globe) {
+      if (map.getLayer('radar')) map.setLayoutProperty('radar', 'visibility', 'none')
+      map.easeTo({ pitch: 50, zoom: Math.max(map.getZoom(), 3.4), bearing: -8, duration: 900 })
+      if (mode === '3d') map.setTerrain({ source: 'terrain', exaggeration: exaggerationRef.current })
+      return
+    }
+    map.setTerrain(null)
+    map.easeTo({ pitch: 0, zoom: 2.3, bearing: 0, duration: 1200 })
+    if (map.getLayer('radar')) {
+      map.setLayoutProperty('radar', 'visibility', 'visible')
+      return
+    }
+    let cancelled = false
+    fetch('https://api.rainviewer.com/public/weather-maps.json')
+      .then((response) => response.json())
+      .then((body) => {
+        if (cancelled || map.getSource('radar')) return
+        const frames = body?.radar?.past ?? []
+        const latest = frames[frames.length - 1]
+        if (!latest || !body.host) return
+        map.addSource('radar', {
+          type: 'raster',
+          tiles: [`${body.host}${latest.path}/256/{z}/{x}/{y}/2/1_1.png`],
+          tileSize: 256,
+          attribution: 'Radar © RainViewer',
+        })
+        map.addLayer({ id: 'radar', type: 'raster', source: 'radar', paint: { 'raster-opacity': 0.5 } })
+      })
+      .catch(() => { /* radar is optional */ })
+    return () => { cancelled = true }
+  }, [ready, globe, mode])
 
   // Communication towers live in OSM but not in the vector tiles, so ask the API
   // (which proxies Overpass) for the current viewport whenever the map settles.
@@ -1384,6 +1450,9 @@ function App() {
   const [drone, setDrone] = useState(false)
   const [walk, setWalk] = useState(false)
   const [damId, setDamId] = useState<string | null>(null)
+  const [globe, setGlobe] = useState(false)
+  const [city, setCity] = useState<CityTarget | null>(null)
+  const [sensor, setSensor] = useState<(typeof SENSORS)[number]>('none')
   const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false, poi: true })
   const [analystText, setAnalystText] = useState('')
   const [analystBusy, setAnalystBusy] = useState(false)
@@ -1578,13 +1647,19 @@ function App() {
             <button className={`ascii-toggle walk-toggle ${walk ? 'active' : ''}`} onClick={() => { setWalk(!walk); setDrone(false) }} title="Street-level walk mode">
               <Footprints size={12} /> WALK
             </button>
+            <button className={`ascii-toggle globe-toggle ${globe ? 'active' : ''}`} onClick={() => { setGlobe(!globe); setDrone(false); setWalk(false) }} title="Globe projection with weather radar">
+              <Globe2 size={12} /> GLOBE
+            </button>
+            <button className="ascii-toggle sensor-toggle" onClick={() => setSensor(SENSORS[(SENSORS.indexOf(sensor) + 1) % SENSORS.length])} title="Display look">
+              <Camera size={12} /> {sensor === 'none' ? 'SENSOR' : sensor.toUpperCase()}
+            </button>
             <div className="seg" role="group" aria-label="Map view mode">
               <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>2D</button>
               <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>3D</button>
             </div>
           </div>
 
-          <div className="map-stage">
+          <div className={`map-stage sensor-${sensor}`}>
             <MapCanvas
               signals={signals}
               activeLayers={activeLayers}
@@ -1594,11 +1669,13 @@ function App() {
               focus={focus}
               drone={drone}
               walk={walk}
+              globe={globe}
               selectedLandmarkId={landmarkId}
               asciiMode={asciiMode}
               onSelectSignal={setSelectedId}
               onSelectLandmark={openLandmark}
               onSelectDam={setDamId}
+              onSelectCity={setCity}
               onPick={handlePick}
             />
 
@@ -1851,6 +1928,8 @@ function App() {
           )}
         </aside>
       </main>
+
+      {city && <CityView city={city} onClose={() => setCity(null)} />}
 
       <footer className="footer">
         <span>INDIA AI OS MAPS · LIVE GEOSPATIAL INTELLIGENCE</span>

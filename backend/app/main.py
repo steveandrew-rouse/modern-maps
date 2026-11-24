@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Literal
@@ -12,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .aggregate import Aggregator
 from .analyst import answer
 from .models import AnalystRequest, NewsItem, Signal, Snapshot, SourceStatus
+from .sources.citymodel import fetch_city
 from .sources.towers import fetch_towers, to_geojson
 
 log = logging.getLogger("india-ai-os")
@@ -127,6 +129,26 @@ def create_app(aggregator: Aggregator | None = None, *, load_feeds: bool = True)
             except (httpx.HTTPError, ValueError, RuntimeError) as exc:
                 raise HTTPException(status_code=502, detail=f"Overpass unavailable: {exc}") from exc
         return to_geojson(towers)
+
+    @app.get("/api/v1/city-model")
+    async def get_city_model(
+        west: float = Query(ge=-180, le=180),
+        south: float = Query(ge=-90, le=90),
+        east: float = Query(ge=-180, le=180),
+        north: float = Query(ge=-90, le=90),
+    ) -> dict:
+        """Building footprints, roads and water for the 3D city scene."""
+        if east <= west or north <= south:
+            raise HTTPException(status_code=400, detail="Invalid bounding box")
+        if max(east - west, north - south) > 0.05:
+            raise HTTPException(status_code=400, detail="Area too large; pick a smaller city centre")
+        async with httpx.AsyncClient() as client:
+            try:
+                return await asyncio.wait_for(
+                    fetch_city(client, south=south, west=west, north=north, east=east), timeout=50,
+                )
+            except (httpx.HTTPError, ValueError, RuntimeError, TimeoutError) as exc:
+                raise HTTPException(status_code=502, detail=f"OpenStreetMap unavailable: {exc}") from exc
 
     return app
 
