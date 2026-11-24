@@ -4,11 +4,14 @@ import type { GeoJSONSource, Map as MapLibreMap, StyleSpecification } from 'mapl
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowUpRight, Bot, Building2, Camera, Car,
   ChevronDown, Database, Footprints, Globe2, Grid3x3, Layers3, MapPin, Plane, RefreshCw, Search,
-  ShieldCheck, Sparkles, Thermometer, Wind, X,
+  ShieldCheck, Sparkles, Thermometer, Waves, Wind, X,
 } from 'lucide-react'
 import type { AnalystResponse, Layer, NewsItem, Severity, Signal, Snapshot } from './types'
 import { LANDMARKS, LANDMARK_BY_ID, type Landmark } from './landmarks'
 import LandmarkViewer from './LandmarkViewer'
+import AircraftViewer from './AircraftViewer'
+import { addPlaneIcons, liveryFor } from './airlines'
+import { DAM_BY_ID, damsGeoJSON } from './infrastructure'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 const LAYER_ORDER: Layer[] = ['earthquake', 'alert', 'weather', 'air', 'flight']
@@ -68,21 +71,130 @@ const MAP_STYLE: StyleSpecification = {
         'hillshade-accent-color': '#0b2436',
       },
     },
+    // Water bodies and waterways from the same vector tiles.
+    {
+      id: 'water', type: 'fill', source: 'openmaptiles', 'source-layer': 'water',
+      paint: { 'fill-color': '#08283a', 'fill-opacity': 0.9 },
+    },
+    {
+      id: 'waterway', type: 'line', source: 'openmaptiles', 'source-layer': 'waterway',
+      paint: {
+        'line-color': '#11536d',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 7, 0.6, 14, 3.2, 18, 7],
+        'line-opacity': 0.85,
+      },
+    },
+    // Airport infrastructure: runways and taxiways.
+    {
+      id: 'aeroway', type: 'line', source: 'openmaptiles', 'source-layer': 'aeroway',
+      minzoom: 10,
+      filter: ['in', ['get', 'class'], ['literal', ['runway', 'taxiway']]],
+      paint: {
+        'line-color': ['match', ['get', 'class'], 'runway', '#586572', '#3b4650'],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 10, 1.2, 14, 5, 18, 16],
+        'line-opacity': 0.92,
+      },
+    },
+    // Rail lines.
+    {
+      id: 'rail', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 7,
+      filter: ['==', ['get', 'class'], 'rail'],
+      paint: {
+        'line-color': '#3a4650',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 7, 0.5, 14, 1.6, 18, 3],
+        'line-dasharray': [6, 4],
+        'line-opacity': 0.8,
+      },
+    },
+    // Tunnels first, so the road casing sits over them.
+    {
+      id: 'road-tunnel', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 11,
+      filter: ['all', ['==', ['get', 'brunnel'], 'tunnel'],
+        ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]]],
+      paint: {
+        'line-color': '#243542',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 0.8, 16, 6, 18, 12],
+        'line-dasharray': [2, 1.4],
+        'line-opacity': 0.7,
+      },
+    },
+    {
+      id: 'road-casing', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 9,
+      filter: ['all', ['!=', ['get', 'brunnel'], 'tunnel'],
+        ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]]],
+      paint: {
+        'line-color': '#0b141b',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 1.4, 13, 4.6, 16, 10, 18, 20],
+        'line-opacity': 0.9,
+      },
+    },
+    {
+      id: 'road-fill', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 9,
+      filter: ['all', ['!=', ['get', 'brunnel'], 'tunnel'],
+        ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]]],
+      paint: {
+        'line-color': ['match', ['get', 'class'],
+          'motorway', '#e3b169', 'trunk', '#dbab6b', 'primary', '#cbd2d8',
+          'secondary', '#bcc4cb', 'tertiary', '#aeb7bf', '#a2acb5'],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 9, 0.7, 13, 3, 16, 7.4, 18, 15],
+      },
+    },
+    // Bridges and flyovers: a shadow offset plus a bright deck reads as elevated.
+    {
+      id: 'road-bridge-shadow', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 11,
+      filter: ['all', ['==', ['get', 'brunnel'], 'bridge'],
+        ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]]],
+      paint: {
+        'line-color': '#02070b',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 2, 15, 9, 18, 22],
+        'line-opacity': 0.5,
+        'line-translate': [3, 5],
+        'line-translate-anchor': 'viewport',
+      },
+    },
+    {
+      id: 'road-bridge', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 11,
+      filter: ['all', ['==', ['get', 'brunnel'], 'bridge'],
+        ['in', ['get', 'class'], ['literal', ['motorway', 'trunk', 'primary', 'secondary', 'tertiary']]]],
+      paint: {
+        'line-color': ['match', ['get', 'class'],
+          'motorway', '#f2c589', 'trunk', '#e8bd84', 'primary', '#e2e7ec',
+          'secondary', '#d7dde3', 'tertiary', '#c9d1d8', '#c9d1d8'],
+        'line-width': ['interpolate', ['linear'], ['zoom'], 11, 1.2, 15, 6, 18, 14],
+      },
+    },
+    // Local streets, drawn only when the camera is close enough to see them.
+    {
+      id: 'road-minor', type: 'line', source: 'openmaptiles', 'source-layer': 'transportation',
+      minzoom: 13,
+      filter: ['in', ['get', 'class'], ['literal', ['minor', 'service', 'track']]],
+      paint: {
+        'line-color': '#38464f',
+        'line-width': ['interpolate', ['linear'], ['zoom'], 13, 0.4, 16, 1.6, 18, 4.5],
+        'line-opacity': 0.85,
+      },
+    },
     {
       id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building',
       minzoom: 13.6,
       filter: ['!=', ['get', 'hide_3d'], true],
       paint: {
-        // Each building takes its own colour from its height band, so blocks stay
-        // distinct instead of merging into one slab.
-        'fill-extrusion-color': [
-          'interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 10],
-          0, '#0e4a6b', 6, '#1f8f9c', 12, '#45d1b3', 20, '#f2c94c',
-          32, '#f2994a', 50, '#eb5757', 90, '#bb6bd9', 160, '#e6f7ff',
+        // Real mapped colours where OSM has them, otherwise concrete-to-glass
+        // material tones sorted by height.
+        'fill-extrusion-color': ['case',
+          ['has', 'colour'], ['to-color', ['get', 'colour'], '#b6b1a8'],
+          ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 10],
+            0, '#9d998f', 8, '#b0aba1', 18, '#c1bcb2', 35, '#a9b3bc', 70, '#93a7b6', 130, '#b7c8d5'],
         ],
         'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
         'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-        'fill-extrusion-opacity': 0.74,
+        'fill-extrusion-opacity': 0.82,
         'fill-extrusion-vertical-gradient': true,
       },
     },
@@ -105,12 +217,15 @@ function toFeatureCollection(signals: Signal[]) {
           layer: signal.layer,
           severity: signal.severity,
           magnitude: Number(signal.metrics.magnitude ?? 0),
+          heading: Number(signal.metrics.heading_deg ?? 0),
+          altitude: Number(signal.metrics.altitude_m ?? 0),
+          airlineCode: signal.layer === 'flight' ? liveryFor(signal.title).code : 'UNK',
         },
       })),
   }
 }
 
-function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onPick }: {
+function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, drone, walk, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onSelectDam, onPick }: {
   signals: Signal[]
   activeLayers: Layer[]
   selectedId: string | null
@@ -118,21 +233,24 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   mode: '2d' | '3d'
   focus: [number, number]
   drone: boolean
+  walk: boolean
   selectedLandmarkId: string | null
   asciiMode: boolean
   onSelectSignal: (id: string) => void
   onSelectLandmark: (id: string) => void
+  onSelectDam: (id: string) => void
   onPick: (lat: number, lng: number) => void
 }) {
   const container = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const handlers = useRef({ onSelectSignal, onSelectLandmark, onPick })
-  handlers.current = { onSelectSignal, onSelectLandmark, onPick }
+  const handlers = useRef({ onSelectSignal, onSelectLandmark, onSelectDam, onPick })
+  handlers.current = { onSelectSignal, onSelectLandmark, onSelectDam, onPick }
   const [ready, setReady] = useState(false)
   const [ascii, setAscii] = useState<{ lines: string[]; coords: string } | null>(null)
   const [orbit, setOrbit] = useState(true)
   const orbitRef = useRef(true)
   const [hud, setHud] = useState({ zoom: 0, bearing: 0 })
+  const [walkHud, setWalkHud] = useState({ lat: 0, lng: 0, heading: 0, moving: false, distance: 0 })
   orbitRef.current = orbit
 
   useEffect(() => {
@@ -156,6 +274,7 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
     map.on('load', () => {
       map.resize()
+      addPlaneIcons(map)
       map.setSky({
         'sky-color': '#0a2033', 'horizon-color': '#2b5673', 'fog-color': '#08131d',
         'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.45,
@@ -201,12 +320,19 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.addSource('traffic', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map.addSource('crowd', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map.addSource('picked', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    map.addSource('dams', { type: 'geojson', data: damsGeoJSON() })
 
     map.addLayer({
-      id: 'lyr-flight', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
-      paint: {
-        'circle-radius': 2.6, 'circle-color': LAYER_META.flight.colour, 'circle-opacity': 0.85,
-        'circle-stroke-width': 0.5, 'circle-stroke-color': '#04221a',
+      id: 'lyr-flight', type: 'symbol', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
+      layout: {
+        'icon-image': ['concat', 'plane-', ['get', 'airlineCode']],
+        'icon-size': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 8, 0.8, 13, 1.2],
+        'icon-rotate': ['get', 'heading'],
+        'icon-rotation-alignment': 'map',
+        'icon-pitch-alignment': 'viewport',
+        'icon-allow-overlap': true,
+        'icon-ignore-placement': true,
+        'symbol-sort-key': ['get', 'altitude'],
       },
     })
     map.addLayer({
@@ -275,6 +401,22 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       },
     })
     map.addLayer({
+      id: 'lyr-dam', type: 'circle', source: 'dams',
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 2.6, 10, 4.6, 16, 7],
+        'circle-color': '#4fb0d8', 'circle-opacity': 0.9,
+        'circle-stroke-width': 1.4, 'circle-stroke-color': '#e8fcff',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-dam-label', type: 'symbol', source: 'dams', minzoom: 5.4,
+      layout: {
+        'text-field': ['get', 'name'], 'text-size': 10, 'text-offset': [0, 1.1],
+        'text-anchor': 'top', 'text-font': ['Noto Sans Regular'],
+      },
+      paint: { 'text-color': '#cfeaf6', 'text-halo-color': '#04121b', 'text-halo-width': 1.3 },
+    })
+    map.addLayer({
       id: 'lyr-picked', type: 'circle', source: 'picked',
       paint: {
         'circle-radius': 5, 'circle-color': '#33e08a', 'circle-stroke-width': 2,
@@ -296,6 +438,12 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     })
     map.on('mouseenter', 'lyr-landmark', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'lyr-landmark', () => { map.getCanvas().style.cursor = '' })
+    map.on('click', 'lyr-dam', (event) => {
+      const feature = event.features?.[0]
+      if (feature?.properties?.id) handlers.current.onSelectDam(String(feature.properties.id))
+    })
+    map.on('mouseenter', 'lyr-dam', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'lyr-dam', () => { map.getCanvas().style.cursor = '' })
   }, [ready, signals])
 
   useEffect(() => {
@@ -317,11 +465,14 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     if (map.getLayer('lyr-landmark-selected')) {
       map.setFilter('lyr-landmark-selected', ['==', ['get', 'id'], selectedLandmarkId ?? '__none__'])
     }
+    // Do not move the camera while walking or flying a drone: the snapshot
+    // refresh re-runs this effect and would yank the view off the street.
+    if (walk || drone) return
     const selected = signals.find((signal) => signal.id === selectedId)
     if (selected && selected.lat !== null && selected.lng !== null) {
       map.easeTo({ center: [selected.lng, selected.lat], zoom: Math.max(map.getZoom(), 5.2), duration: 700 })
     }
-  }, [ready, selectedId, selectedLandmarkId, signals])
+  }, [ready, selectedId, selectedLandmarkId, signals, walk, drone])
 
   useEffect(() => {
     if (!ready) return
@@ -386,6 +537,80 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     const timer = setInterval(update, 250)
     return () => clearInterval(timer)
   }, [ready, drone])
+
+  // Street-level walk mode: WASD / arrow keys move the camera at human speed
+  // over the satellite and 3D building layers, Shift jogs.
+  useEffect(() => {
+    if (!ready || !walk) return
+    const map = mapRef.current
+    if (!map) return
+    map.easeTo({ center: focus, zoom: Math.max(map.getZoom(), 17.6), pitch: 78, bearing: 0, duration: 1100 })
+    const start = map.getCenter()
+    setWalkHud({ lat: start.lat, lng: start.lng, heading: 0, moving: false, distance: 0 })
+
+    const pressed = new Set<string>()
+    const keys = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'shift']
+    const isField = (target: EventTarget | null) =>
+      target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isField(event.target)) return
+      const key = event.key.toLowerCase()
+      if (!keys.includes(key)) return
+      pressed.add(key)
+      event.preventDefault()
+    }
+    const onKeyUp = (event: KeyboardEvent) => pressed.delete(event.key.toLowerCase())
+    const onBlur = () => pressed.clear()
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+
+    let distance = 0
+    let last = performance.now()
+    let sample = 0
+    let frame = 0
+    const tick = (time: number) => {
+      frame = requestAnimationFrame(tick)
+      const seconds = Math.min(0.12, (time - last) / 1000)
+      last = time
+      const forward = (pressed.has('w') || pressed.has('arrowup') ? 1 : 0)
+        - (pressed.has('s') || pressed.has('arrowdown') ? 1 : 0)
+      const strafe = (pressed.has('d') || pressed.has('arrowright') ? 1 : 0)
+        - (pressed.has('a') || pressed.has('arrowleft') ? 1 : 0)
+      const moving = forward !== 0 || strafe !== 0
+      if (moving) {
+        const speed = pressed.has('shift') ? 6 : 1.5
+        const bearing = (map.getBearing() * Math.PI) / 180
+        const north = (Math.cos(bearing) * forward - Math.sin(bearing) * strafe) * speed * seconds
+        const east = (Math.sin(bearing) * forward + Math.cos(bearing) * strafe) * speed * seconds
+        const center = map.getCenter()
+        map.setCenter([
+          center.lng + east / (111320 * Math.cos((center.lat * Math.PI) / 180)),
+          center.lat + north / 111320,
+        ])
+        distance += speed * seconds
+      }
+      sample += 1
+      if (sample % 6 === 0) {
+        const center = map.getCenter()
+        setWalkHud({
+          lat: center.lat,
+          lng: center.lng,
+          heading: ((map.getBearing() % 360) + 360) % 360,
+          moving,
+          distance,
+        })
+      }
+    }
+    frame = requestAnimationFrame(tick)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+      pressed.clear()
+    }
+  }, [ready, walk, focus])
 
   const nudgeBearing = (delta: number) => {
     const map = mapRef.current
@@ -550,6 +775,16 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
           <span className="drone-readout">ALT z{hud.zoom.toFixed(1)} · BRG {Math.round((hud.bearing % 360 + 360) % 360)}°</span>
         </div>
       )}
+      {walk && (
+        <div className="walk-hud">
+          <span className="walk-title"><Footprints size={11} /> WALK</span>
+          <span className="walk-readout">
+            {walkHud.lat.toFixed(5)}, {walkHud.lng.toFixed(5)} · HDG {Math.round(walkHud.heading)}° · {Math.round(walkHud.distance)} m
+          </span>
+          <span className={`walk-state ${walkHud.moving ? 'moving' : ''}`}>{walkHud.moving ? 'WALKING' : 'STANDING'}</span>
+          <span className="walk-hint">W A S D / arrows move · Shift to jog · drag to look</span>
+        </div>
+      )}
       {asciiMode && ascii && (
         <div className="ascii-shell">
           <div className="ascii-head">
@@ -702,6 +937,8 @@ function App() {
   const [placesOpen, setPlacesOpen] = useState(false)
   const [asciiMode, setAsciiMode] = useState(false)
   const [drone, setDrone] = useState(false)
+  const [walk, setWalk] = useState(false)
+  const [damId, setDamId] = useState<string | null>(null)
   const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false })
   const [analystText, setAnalystText] = useState('')
   const [analystBusy, setAnalystBusy] = useState(false)
@@ -755,6 +992,7 @@ function App() {
 
   const selected = signals.find((signal) => signal.id === selectedId) ?? null
   const landmark = landmarkId ? LANDMARK_BY_ID.get(landmarkId) ?? null : null
+  const dam = damId ? DAM_BY_ID.get(damId) ?? null : null
   const focus = useMemo<[number, number]>(
     () => (landmark ? [landmark.lng, landmark.lat] : [78.9, 22.4]),
     [landmark],
@@ -880,8 +1118,11 @@ function App() {
             <button className={`ascii-toggle ${asciiMode ? 'active' : ''}`} onClick={() => setAsciiMode(!asciiMode)} title="ASCII projection view">
               <Grid3x3 size={12} /> ASCII
             </button>
-            <button className={`ascii-toggle drone-toggle ${drone ? 'active' : ''}`} onClick={() => setDrone(!drone)} title="Drone camera mode">
+            <button className={`ascii-toggle drone-toggle ${drone ? 'active' : ''}`} onClick={() => { setDrone(!drone); setWalk(false) }} title="Drone camera mode">
               <Plane size={12} /> DRONE
+            </button>
+            <button className={`ascii-toggle walk-toggle ${walk ? 'active' : ''}`} onClick={() => { setWalk(!walk); setDrone(false) }} title="Street-level walk mode">
+              <Footprints size={12} /> WALK
             </button>
             <div className="seg" role="group" aria-label="Map view mode">
               <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>2D</button>
@@ -898,10 +1139,12 @@ function App() {
               mode={mode}
               focus={focus}
               drone={drone}
+              walk={walk}
               selectedLandmarkId={landmarkId}
               asciiMode={asciiMode}
               onSelectSignal={setSelectedId}
               onSelectLandmark={openLandmark}
+              onSelectDam={setDamId}
               onPick={handlePick}
             />
 
@@ -960,6 +1203,15 @@ function App() {
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {dam && (
+              <div className="locator-card dam-card">
+                <div className="locator-head"><Waves size={11} /> DAM · {dam.state}</div>
+                <b>{dam.name}</b>
+                <small>{dam.river} · {dam.type} · {dam.height_m} m high · {dam.year}</small>
+                <button className="locator-close" onClick={() => setDamId(null)}><X size={11} /></button>
               </div>
             )}
 
@@ -1031,6 +1283,7 @@ function App() {
                   </div>
                   <div className="detail">
                     <h3>{selected.title}</h3>
+                    {selected.layer === 'flight' && <AircraftViewer signal={selected} />}
                     <p>{selected.detail || 'No further detail supplied by the provider.'}</p>
                     <dl>
                       <div><dt>Place</dt><dd>{selected.place || '—'}</dd></div>
@@ -1131,7 +1384,7 @@ function App() {
 
       <footer className="footer">
         <span>INDIA AI OS MAPS · LIVE GEOSPATIAL INTELLIGENCE</span>
-        <span><Camera size={9} /> 3D RECONSTRUCTION · SIMULATED TRAFFIC &amp; CROWD</span>
+        <span><Camera size={9} /> OSM ROADS, BRIDGES &amp; BUILDINGS · SIMULATED TRAFFIC &amp; CROWD</span>
         <span>NOT AN OFFICIAL GOVERNMENT PLATFORM</span>
       </footer>
     </div>

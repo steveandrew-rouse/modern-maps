@@ -117,7 +117,7 @@ Signal record:
 
 ## 7. 3D map, ASCII locator and landmarks
 
-**3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) from zoom 13.6, with non-3D buildings filtered out. Each building is coloured by its own height band (deep blue to teal, amber, orange, red, violet, white) at 74% opacity, so blocks stay individually readable over the imagery instead of merging into one mass.
+**3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) from zoom 13.6, with non-3D buildings filtered out. Buildings keep the colour mapped in OSM where it exists and otherwise use concrete-to-glass material tones sorted by height, drawn at 82% opacity so the satellite imagery still reads underneath.
 
 **Drone camera.** The `DRONE` button drops the camera to ~15.2 zoom at 68° pitch over the focused place and orbits it through a full 360°, pausing while you drag, scroll or zoom and resuming after three seconds. The HUD shows `ALT` (zoom) and `BRG` (bearing) with manual rotate (◀ ▶), climb/descend (▲ ▼) and an ORBIT toggle for hands-on control.
 
@@ -136,7 +136,21 @@ The 3D models are procedural interpretations built from primitives, not survey-g
 
 ![ASCII projection](ascii-view.png)
 
-## 8. Hosting
+## 8. Roads, walk mode and aircraft
+
+**Street network.** Roads, bridges and tunnels come from the same OpenFreeMap vector tiles, not from the satellite picture: motorways, trunk roads, primary, secondary and tertiary roads carry width and colour ramps by class, local streets appear from zoom 13, railway lines are dashed, and tunnels are drawn dark and dashed beneath the road casing. Bridges and flyovers (`brunnel=bridge`) get a bright deck over an offset shadow so they read as elevated — the elevation is a cartographic effect on a real bridge line, not a measured deck height.
+
+**Water and airports.** Lakes and river polygons fill over the imagery, waterways draw as lines, and airport runways and taxiways come from the `aeroway` layer.
+
+**Dams.** Ten major Indian dams and barrages (Tehri, Bhakra, Idukki, Sardar Sarovar, Nagarjuna Sagar, Koyna, Rihand, Ukai, Hirakud, Mettur) are plotted from a curated public dataset in `frontend/src/infrastructure.ts`. Click a marker for river, type, height and year. Coordinates are rounded to about a kilometre.
+
+**Walk mode.** The `WALK` button drops the camera to street level (~17.6 zoom, 78° pitch) at the focused place. `W`/`A`/`S`/`D` or the arrow keys move at 1.5 m/s, `Shift` jogs at 6 m/s, drag turns the view. The HUD shows position, heading, distance travelled and whether you are moving. You are walking over the real satellite imagery and the real OSM building extrusions — nothing is generated to fill the gaps, so you see what the tiles contain and nothing inside the buildings.
+
+**Aircraft.** Live OpenSky positions now render as airliner silhouettes instead of dots: each is rotated to its reported true track, and painted with the livery of the operator derived from the ICAO callsign prefix (Air India, IndiGo, SpiceJet, Air India Express, Akasa, and 15 international carriers, in `frontend/src/airlines.ts`). Selecting a flight opens a procedural 3D narrowbody in that livery with altitude, speed and heading. OpenSky's public state vectors carry no airframe type or registration, so the model is representative, not the exact airframe.
+
+![Walk mode at the Taj Mahal](walk-mode.png)
+
+## 9. Hosting
 
 The UI is a static single-page app; the API is a Python service. They are deployed separately.
 
@@ -161,12 +175,16 @@ $env:VITE_API_URL="https://your-api.example.com"; npm run build
 
 Pages cannot execute Python, so a Pages-only deployment shows the UI shell with an API-unavailable banner until `VITE_API_URL` points at a reachable API.
 
-## 9. Honesty and limits
+## 10. Honesty and limits
 
 - Not an official government service. Follow IMD and NDMA for warnings.
 - Feeds provide observations and official alerts — not forecasts. No predictive model is included.
 - The analyst is deterministic and grounded: it composes text from the current snapshot, cites records, and uses no language model.
 - The 3D landmark models are procedural interpretations, not measured or photogrammetric reconstructions.
+- Nothing here reconstructs objects photogrammetrically from satellite pixels. Buildings, roads, bridges and dams are vector data (OSM/OpenFreeMap and a curated dam list); anything not in that data is simply absent.
+- There are no interiors beyond the eight procedural landmark models, and no underground pipelines or utility networks — that data is not published openly for India, so none is invented.
+- Bridge deck elevation is a cartographic shadow effect; dam coordinates are rounded to roughly 1 km; dam heights are published maximum structure heights.
+- Aircraft livery is inferred from the callsign prefix and the 3D airframe is a generic narrowbody; OpenSky does not provide type or registration in the public feed.
 - Traffic and crowd overlays are simulations, not observed vehicle counts or footfall.
 - Bundled landmark imagery is AI-generated illustration, captioned in the interface.
 - No person-level tracking, no face recognition, no watchlists, no surveillance workflows.

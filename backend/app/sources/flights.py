@@ -41,6 +41,9 @@ async def fetch(client: httpx.AsyncClient) -> list[Signal]:
             continue
         altitude = float(state[7] or state[13] or 0.0)
         velocity = float(state[9] or 0.0)
+        # Index 10 is the true track over ground, index 8 the on-ground flag.
+        heading = float(state[10] or 0.0)
+        on_ground = bool(state[8])
         signals.append(
             Signal(
                 id=f"fl-{state[0]}",
@@ -54,8 +57,13 @@ async def fetch(client: httpx.AsyncClient) -> list[Signal]:
                 provider=PROVIDER,
                 source=NAME,
                 url="https://opensky-network.org/network/explorer",
-                detail=f"Altitude {altitude:.0f} m · speed {velocity * 3.6:.0f} km/h",
-                metrics={"altitude_m": altitude, "speed_kmh": velocity * 3.6},
+                detail=f"Altitude {altitude:.0f} m · speed {velocity * 3.6:.0f} km/h · heading {heading:.0f}°",
+                metrics={
+                    "altitude_m": altitude,
+                    "speed_kmh": velocity * 3.6,
+                    "heading_deg": heading,
+                    "on_ground": int(on_ground),
+                },
             )
         )
     return signals
