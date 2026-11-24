@@ -24,6 +24,7 @@ export type NewsItem = {
   url: string
   source: string
   published: string | null
+  language?: string
 }
 
 export type SourceStatus = {

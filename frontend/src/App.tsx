@@ -6,7 +6,7 @@ import {
   ChevronDown, Database, Footprints, Globe2, Grid3x3, Layers3, MapPin, Plane, RefreshCw, Search,
   ShieldCheck, Sparkles, Thermometer, Waves, Wind, X,
 } from 'lucide-react'
-import type { AnalystResponse, Layer, NewsItem, Severity, Signal, Snapshot } from './types'
+import type { AnalystResponse, Layer, Severity, Signal, Snapshot } from './types'
 import { LANDMARKS, LANDMARK_BY_ID, type Landmark } from './landmarks'
 import LandmarkViewer from './LandmarkViewer'
 import AircraftViewer from './AircraftViewer'
@@ -180,6 +180,31 @@ const MAP_STYLE: StyleSpecification = {
         'line-opacity': 0.85,
       },
     },
+    // Woodland canopy read as a low 3D mass instead of flat green fill.
+    {
+      id: 'landcover-wood', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'landcover',
+      minzoom: 9,
+      filter: ['in', ['get', 'class'], ['literal', ['wood', 'forest']]],
+      paint: {
+        'fill-extrusion-color': ['match', ['get', 'class'], 'wood', '#123a29', '#16452f'],
+        'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 9, 0, 12, 5, 16, 13],
+        'fill-extrusion-opacity': 0.6,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
+    // Mountain peaks with their surveyed elevation.
+    {
+      id: 'peaks', type: 'symbol', source: 'openmaptiles', 'source-layer': 'mountain_peak',
+      minzoom: 6,
+      layout: {
+        'text-field': ['concat', ['coalesce', ['get', 'name'], 'Peak'], ' ', ['to-string', ['round', ['coalesce', ['get', 'ele'], 0]]], ' m'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 6, 9, 12, 11],
+        'text-font': ['Noto Sans Regular'],
+        'text-allow-overlap': false,
+        'text-padding': 4,
+      },
+      paint: { 'text-color': '#d8ece0', 'text-halo-color': '#07130d', 'text-halo-width': 1.3 },
+    },
     {
       id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building',
       minzoom: 13.6,
@@ -192,8 +217,11 @@ const MAP_STYLE: StyleSpecification = {
           ['interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 10],
             0, '#9d998f', 8, '#b0aba1', 18, '#c1bcb2', 35, '#a9b3bc', 70, '#93a7b6', 130, '#b7c8d5'],
         ],
-        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
-        'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+        // Clamp implausible heights (a few OSM footprints carry metres-as-feet
+        // or stray huge values) and ignore elevated bases, which extrude as
+        // floating slabs around complexes like the Taj Mahal.
+        'fill-extrusion-height': ['min', 320, ['max', 3, ['coalesce', ['get', 'render_height'], 8]]],
+        'fill-extrusion-base': 0,
         'fill-extrusion-opacity': 0.82,
         'fill-extrusion-vertical-gradient': true,
       },
@@ -202,8 +230,58 @@ const MAP_STYLE: StyleSpecification = {
   terrain: { source: 'terrain', exaggeration: 1.3 },
 }
 
-type Overlays = { buildings: boolean; traffic: boolean; crowd: boolean }
+type Overlays = { buildings: boolean; traffic: boolean; crowd: boolean; poi: boolean }
 type InspectRow = { label: string; value: string }
+
+const POI_CLASSES = {
+  food: ['restaurant', 'fast_food', 'cafe', 'bar', 'pub', 'food_court', 'ice_cream', 'bakery'],
+  lodging: ['hotel', 'hostel', 'guest_house', 'motel', 'lodging', 'apartment'],
+  shop: ['shop', 'supermarket', 'convenience', 'mall', 'marketplace', 'clothes', 'clothing_store', 'department_store', 'grocery', 'butcher', 'hardware'],
+  nature: ['park', 'garden', 'playground', 'beach', 'nature_reserve', 'viewpoint', 'picnic_site', 'campsite'],
+  culture: ['museum', 'attraction', 'art_gallery', 'monument', 'memorial', 'theatre', 'cinema', 'place_of_worship', 'castle'],
+  transport: ['bus', 'bus_station', 'railway', 'train', 'fuel', 'parking', 'ferry'],
+  health: ['hospital', 'clinic', 'pharmacy', 'doctors', 'dentist'],
+}
+
+const POI_COLOURS: Record<string, string> = {}
+for (const value of POI_CLASSES.food) POI_COLOURS[value] = '#ffb347'
+for (const value of POI_CLASSES.lodging) POI_COLOURS[value] = '#c39bff'
+for (const value of POI_CLASSES.shop) POI_COLOURS[value] = '#7ce7a4'
+for (const value of POI_CLASSES.nature) POI_COLOURS[value] = '#58c98a'
+for (const value of POI_CLASSES.culture) POI_COLOURS[value] = '#ffd166'
+for (const value of POI_CLASSES.transport) POI_COLOURS[value] = '#8fb8ff'
+for (const value of POI_CLASSES.health) POI_COLOURS[value] = '#ff8a8a'
+
+const LANGUAGE_LABELS: Record<string, string> = {
+  en: 'EN', Hindi: 'हिन्दी', Tamil: 'தமிழ்', Telugu: 'తెలుగు', Bengali: 'বাংলা',
+  Malayalam: 'മലയാളം', Kannada: 'ಕನ್ನಡ', Gujarati: 'ગુજરાતી', Marathi: 'मराठी',
+}
+
+const POI_ALL = Object.values(POI_CLASSES).flat()
+const POI_MATCH = ['match', ['get', 'class'], ...Object.entries(POI_COLOURS).flat(), '#9fb2c4']
+
+/** Dashed heading ray for each aircraft, used to show where it is travelling. */
+function flightTracks(signals: Signal[]) {
+  const features = [] as { type: 'Feature'; geometry: { type: 'LineString'; coordinates: number[][] }; properties: Record<string, unknown> }[]
+  for (const signal of signals) {
+    if (signal.layer !== 'flight' || signal.lat === null || signal.lng === null) continue
+    const heading = Number(signal.metrics.heading_deg ?? NaN)
+    if (!Number.isFinite(heading)) continue
+    const speed = Number(signal.metrics.speed_kmh ?? 0)
+    const distanceKm = Math.min(180, Math.max(25, speed * 0.12))
+    const theta = (heading * Math.PI) / 180
+    const north = Math.cos(theta) * distanceKm
+    const east = Math.sin(theta) * distanceKm
+    const endLat = signal.lat + north / 111
+    const endLng = signal.lng + east / (111 * Math.cos((signal.lat * Math.PI) / 180))
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: [[signal.lng, signal.lat], [endLng, endLat]] },
+      properties: { id: signal.id },
+    })
+  }
+  return { type: 'FeatureCollection' as const, features }
+}
 
 const INSPECT_LAYERS = [
   'buildings-3d', 'road-bridge', 'road-fill', 'road-minor', 'road-tunnel', 'water',
@@ -347,6 +425,7 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   const [ascii, setAscii] = useState<{ lines: string[]; coords: string } | null>(null)
   const [orbit, setOrbit] = useState(true)
   const orbitRef = useRef(true)
+  const orbitPauseRef = useRef(0)
   const [hud, setHud] = useState({ zoom: 0, bearing: 0 })
   const [walkHud, setWalkHud] = useState({ lat: 0, lng: 0, heading: 0, moving: false, distance: 0 })
   const [inspect, setInspect] = useState<{ lng: number; lat: number; x: number; y: number; rows: InspectRow[] } | null>(null)
@@ -439,6 +518,8 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     if (!map) return
     if (map.getSource('signals')) {
       ;(map.getSource('signals') as GeoJSONSource).setData(toFeatureCollection(signals))
+      const tracks = map.getSource('flight-tracks') as GeoJSONSource | undefined
+      if (tracks) tracks.setData(flightTracks(signals) as never)
       return
     }
     map.addSource('signals', { type: 'geojson', data: toFeatureCollection(signals) })
@@ -459,6 +540,7 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.addSource('dams', { type: 'geojson', data: damsGeoJSON() })
     map.addSource('waves', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
     map.addSource('towers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    map.addSource('flight-tracks', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
 
     map.addLayer({
       id: 'lyr-flight', type: 'symbol', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
@@ -580,6 +662,43 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
       },
       paint: { 'text-color': '#bff2ff', 'text-halo-color': '#04121b', 'text-halo-width': 1.2 },
     })
+
+    // Points of interest: food, lodging, shops, parks and beaches, culture,
+    // transport and health, straight from the OSM poi layer.
+    map.addLayer({
+      id: 'lyr-poi', type: 'circle', source: 'openmaptiles', 'source-layer': 'poi', minzoom: 13,
+      filter: ['in', ['get', 'class'], ['literal', POI_ALL]],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, 2.4, 17, 4.8],
+        'circle-color': POI_MATCH as never,
+        'circle-opacity': 0.92,
+        'circle-stroke-width': 1,
+        'circle-stroke-color': '#04121b',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-poi-label', type: 'symbol', source: 'openmaptiles', 'source-layer': 'poi', minzoom: 14.4,
+      filter: ['all', ['in', ['get', 'class'], ['literal', POI_ALL]], ['has', 'name']],
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-size': 10,
+        'text-font': ['Noto Sans Regular'],
+        'text-offset': [0, 1.2],
+        'text-anchor': 'top',
+        'text-optional': true,
+        'text-padding': 2,
+      },
+      paint: { 'text-color': '#e8f4ff', 'text-halo-color': '#04121b', 'text-halo-width': 1.2 },
+    })
+
+    // Projected track for the selected aircraft (heading ray, not a filed route).
+    map.addLayer({
+      id: 'lyr-flight-track', type: 'line', source: 'flight-tracks',
+      paint: {
+        'line-color': '#7ce7a4', 'line-width': 1.6, 'line-opacity': 0.7,
+        'line-dasharray': [3, 2],
+      },
+    })
     map.addLayer({
       id: 'lyr-picked', type: 'circle', source: 'picked',
       paint: {
@@ -657,12 +776,20 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     if (map.getLayer('lyr-landmark-selected')) {
       map.setFilter('lyr-landmark-selected', ['==', ['get', 'id'], selectedLandmarkId ?? '__none__'])
     }
+    if (map.getLayer('lyr-flight-track')) {
+      map.setFilter('lyr-flight-track', ['==', ['get', 'id'], selectedId ?? '__none__'])
+    }
     // Do not move the camera while walking or flying a drone: the snapshot
     // refresh re-runs this effect and would yank the view off the street.
     if (walk || drone) return
     const selected = signals.find((signal) => signal.id === selectedId)
     if (selected && selected.lat !== null && selected.lng !== null) {
-      map.easeTo({ center: [selected.lng, selected.lat], zoom: Math.max(map.getZoom(), 5.2), duration: 700 })
+      // An aircraft needs context for its track, so ease out rather than keep a
+      // street-level zoom from a previous place.
+      const zoom = selected.layer === 'flight'
+        ? Math.min(Math.max(map.getZoom(), 6), 9.5)
+        : Math.max(map.getZoom(), 5.2)
+      map.easeTo({ center: [selected.lng, selected.lat], zoom, duration: 800 })
     }
   }, [ready, selectedId, selectedLandmarkId, signals, walk, drone])
 
@@ -785,7 +912,9 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     map.on('wheel', pause)
     const tick = () => {
       frame = requestAnimationFrame(tick)
-      if (orbiting && !paused && orbitRef.current) map.setBearing(map.getBearing() + 0.12)
+      if (orbiting && !paused && orbitRef.current && performance.now() > orbitPauseRef.current) {
+        map.setBearing(map.getBearing() + 0.12)
+      }
     }
     tick()
     return () => {
@@ -907,6 +1036,8 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
   const nudgeZoom = (delta: number) => {
     const map = mapRef.current
     if (!map) return
+    // Pause the orbit so setBearing does not cancel this ease on the next frame.
+    orbitPauseRef.current = performance.now() + 1500
     map.easeTo({ zoom: map.getZoom() + delta, duration: 450 })
   }
 
@@ -916,6 +1047,15 @@ function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, d
     if (!map || !map.getLayer('buildings-3d')) return
     map.setLayoutProperty('buildings-3d', 'visibility', overlays.buildings ? 'visible' : 'none')
   }, [ready, overlays.buildings])
+
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map) return
+    for (const id of ['lyr-poi', 'lyr-poi-label']) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', overlays.poi ? 'visible' : 'none')
+    }
+  }, [ready, overlays.poi])
 
   // Simulated traffic: vehicles circulating around the focused city.
   useEffect(() => {
@@ -1244,7 +1384,7 @@ function App() {
   const [drone, setDrone] = useState(false)
   const [walk, setWalk] = useState(false)
   const [damId, setDamId] = useState<string | null>(null)
-  const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false })
+  const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false, poi: true })
   const [analystText, setAnalystText] = useState('')
   const [analystBusy, setAnalystBusy] = useState(false)
   const [analyst, setAnalyst] = useState<AnalystResponse | null>(null)
@@ -1252,6 +1392,7 @@ function App() {
   const [landmarkId, setLandmarkId] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<DetailTab>('view')
   const [picked, setPicked] = useState<{ lat: number; lng: number } | null>(null)
+  const [newsLang, setNewsLang] = useState<string | null>(null)
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000)
@@ -1296,6 +1437,14 @@ function App() {
   }, [signals, tab, activeLayers, query])
 
   const selected = signals.find((signal) => signal.id === selectedId) ?? null
+  const newsLanguages = useMemo(
+    () => [...new Set((snapshot?.news ?? []).map((item) => item.language ?? 'en'))],
+    [snapshot],
+  )
+  const visibleNews = useMemo(
+    () => (snapshot?.news ?? []).filter((item) => !newsLang || (item.language ?? 'en') === newsLang),
+    [snapshot, newsLang],
+  )
   const landmark = landmarkId ? LANDMARK_BY_ID.get(landmarkId) ?? null : null
   const dam = damId ? DAM_BY_ID.get(damId) ?? null : null
   const focus = useMemo<[number, number]>(
@@ -1423,7 +1572,7 @@ function App() {
             <button className={`ascii-toggle ${asciiMode ? 'active' : ''}`} onClick={() => setAsciiMode(!asciiMode)} title="ASCII projection view">
               <Grid3x3 size={12} /> ASCII
             </button>
-            <button className={`ascii-toggle drone-toggle ${drone ? 'active' : ''}`} onClick={() => { setDrone(!drone); setWalk(false) }} title="Drone camera mode">
+            <button className={`ascii-toggle drone-toggle ${drone ? 'active' : ''}`} onClick={() => { const next = !drone; setDrone(next); setWalk(false); if (next) setMode('3d') }} title="Drone camera mode">
               <Plane size={12} /> DRONE
             </button>
             <button className={`ascii-toggle walk-toggle ${walk ? 'active' : ''}`} onClick={() => { setWalk(!walk); setDrone(false) }} title="Street-level walk mode">
@@ -1480,6 +1629,12 @@ function App() {
                     <Building2 size={13} style={{ color: '#8ef0ff' }} />
                     <span className="layer-name">3D buildings</span>
                     <span className="layer-count">z14+</span>
+                  </button>
+                  <button className={`layer-row ${overlays.poi ? 'on' : ''}`} onClick={() => setOverlays({ ...overlays, poi: !overlays.poi })}>
+                    <span className={`check ${overlays.poi ? 'checked' : ''}`} />
+                    <MapPin size={13} style={{ color: '#7ce7a4' }} />
+                    <span className="layer-name">Places &amp; POIs</span>
+                    <span className="layer-count">z13+</span>
                   </button>
                   <button className={`layer-row ${overlays.traffic ? 'on' : ''}`} onClick={() => setOverlays({ ...overlays, traffic: !overlays.traffic })}>
                     <span className={`check ${overlays.traffic ? 'checked' : ''}`} />
@@ -1613,17 +1768,27 @@ function App() {
                   <span><Database size={12} /> LIVE HEADLINES</span>
                   <span className="badge">{snapshot?.news.length ?? 0}</span>
                 </div>
-                <div className="rail-tabs">
-                  {snapshot?.news.length
-                    ? [...new Set((snapshot?.news ?? []).map((item: NewsItem) => item.source))].slice(0, 6)
-                        .map((name) => <span key={name} className="source-tab">{name}</span>)
-                    : <span className="source-tab">Awaiting feeds</span>}
+                <div className="rail-tabs lang-tabs">
+                  <button className={newsLang === null ? 'active' : ''} onClick={() => setNewsLang(null)}>ALL</button>
+                  {newsLanguages.map((language) => (
+                    <button
+                      key={language}
+                      className={newsLang === language ? 'active' : ''}
+                      onClick={() => setNewsLang(language)}
+                    >
+                      {LANGUAGE_LABELS[language] ?? language}
+                    </button>
+                  ))}
                 </div>
                 <div className="news-list">
-                  {(snapshot?.news ?? []).slice(0, 20).map((item) => (
+                  {visibleNews.length === 0 && <div className="feed-empty">No headlines in this language yet.</div>}
+                  {visibleNews.slice(0, 30).map((item) => (
                     <a key={item.id} className="news-row" href={item.url} target="_blank" rel="noreferrer">
                       <b>{item.title}</b>
-                      <small>{item.source} · {relative(item.published, now)} ago</small>
+                      <small>
+                        <span className="lang-badge">{LANGUAGE_LABELS[item.language ?? 'en'] ?? item.language}</span>
+                        {' '}{item.source} · {relative(item.published, now)} ago
+                      </small>
                     </a>
                   ))}
                 </div>

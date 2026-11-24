@@ -8,13 +8,13 @@ from typing import Any
 import httpx
 
 from .models import NewsItem, Signal, Snapshot, SourceStatus
-from .sources import alerts, earthquakes, flights, news, weather
+from .sources import alerts, earthquakes, flights, news, news_indic, weather
 from .sources.common import USER_AGENT, now_iso, severity_rank
 
 log = logging.getLogger("india-ai-os.feeds")
 
 SIGNAL_SOURCES = [earthquakes, alerts, weather, flights]
-NEWS_SOURCES = [news]
+NEWS_SOURCES = [news, news_indic]
 REFRESH_SECONDS = 120
 
 
@@ -35,9 +35,9 @@ class Aggregator:
                 timeout=25.0,
                 follow_redirects=True,
             ) as client:
-                signal_results, news_result = await asyncio.gather(
+                signal_results, news_results = await asyncio.gather(
                     asyncio.gather(*(self._run_signal(client, module) for module in SIGNAL_SOURCES)),
-                    self._run_news(client, news),
+                    asyncio.gather(*(self._run_news(client, module) for module in NEWS_SOURCES)),
                 )
 
             statuses: list[SourceStatus] = []
@@ -47,8 +47,20 @@ class Aggregator:
                 statuses.append(source_status)
                 signals.extend(source_signals)
 
-            news_status, news_items = news_result
-            statuses.append(news_status)
+            news_items: list[NewsItem] = []
+            for news_status, items in news_results:
+                statuses.append(news_status)
+                news_items.extend(items)
+            news_items.sort(key=lambda item: item.published or "", reverse=True)
+            seen_titles: set[str] = set()
+            deduped: list[NewsItem] = []
+            for item in news_items:
+                key = item.title.strip().lower()
+                if not key or key in seen_titles:
+                    continue
+                seen_titles.add(key)
+                deduped.append(item)
+            news_items = deduped
 
             signals.sort(key=lambda s: (severity_rank(s.severity), s.time or ""), reverse=False)
             signals.sort(key=lambda s: (severity_rank(s.severity), _desc(s.time)))
@@ -61,7 +73,7 @@ class Aggregator:
             self.snapshot = Snapshot(
                 generated_at=now_iso(),
                 signals=signals,
-                news=news_items[:60],
+                news=news_items[:120],
                 counts=counts,
                 sources=statuses,
             )

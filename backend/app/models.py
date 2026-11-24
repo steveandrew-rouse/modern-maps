@@ -31,6 +31,7 @@ class NewsItem(BaseModel):
     url: str
     source: str
     published: str | None = None
+    language: str = "en"
 
 
 class SourceStatus(BaseModel):

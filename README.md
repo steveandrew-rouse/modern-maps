@@ -25,6 +25,8 @@ Basemap: Esri World Imagery tiles with AWS Terrain Tiles (Mapzen terrarium) for 
 
 No API key is required for any of these. Feeds that do require credentials (IMD, NDMA SACHET, data.gov.in, BhuvAN) are described in `docs/04-data-connectors.md` and can be added as new adapters.
 
+Headlines arrive in English and in eight Indian languages (Hindi, Tamil, Telugu, Bengali, Malayalam, Kannada, Gujarati, and English), each item tagged with its language so the rail can filter by it. Feeds: Google News India, Times of India, BBC Hindi/Telugu/Gujarati, Aaj Tak, News18 Tamil/Malayalam/Kannada, ABP Ananda. Headline and link only.
+
 ## 3. Architecture
 
 ```text
@@ -140,6 +142,14 @@ The 3D models are procedural interpretations built from primitives, not survey-g
 
 ## 8. Roads, walk mode and aircraft
 
+**Places of interest.** The OSM `poi` layer is drawn from zoom 13 as coloured category dots — food and drink, lodging, shops, green space and beaches, culture and worship, transport and fuel, health — with names labelled from zoom 14.4. Toggle `Places & POIs` in the layer drawer. Names and categories come from OSM; no photographs are attached to them, because the tile schema carries no images.
+
+**Forests and mountains.** Woodland and forest polygons are extruded as a low canopy mass instead of flat green fill, and named peaks carry their surveyed elevation from the `mountain_peak` layer. Hillshade and terrain remain underneath.
+
+**Aircraft tracks.** Selecting a flight eases the camera out to ~9.5 zoom so the aircraft and its projected track are both in frame, and draws a dashed ray along its reported true track (length scaled from ground speed, capped at 180 km). This is a heading projection from the live position — OpenSky publishes no filed route or destination, so no destination is invented.
+
+**Building sanity.** Extrusions ignore elevated `render_min_height` bases, which used to draw floating slabs around complexes like the Taj Mahal, and clamp implausible heights to 320 m. The Taj complex now reads as its mausoleum, plinth and four minarets rather than a heap.
+
 **Street network.** Roads, bridges and tunnels come from the same OpenFreeMap vector tiles, not from the satellite picture: motorways, trunk roads, primary, secondary and tertiary roads carry width and colour ramps by class, local streets appear from zoom 13, railway lines are dashed, and tunnels are drawn dark and dashed beneath the road casing. Bridges and flyovers (`brunnel=bridge`) get a bright deck over an offset shadow so they read as elevated — the elevation is a cartographic effect on a real bridge line, not a measured deck height.
 
 **Water and airports.** Lakes and river polygons fill over the imagery, waterways draw as lines, and airport runways and taxiways come from the `aeroway` layer.
@@ -197,6 +207,9 @@ Pages cannot execute Python, so a Pages-only deployment shows the UI shell with 
 - Aircraft livery is inferred from the callsign prefix and the 3D airframe is a generic narrowbody; OpenSky does not provide type or registration in the public feed.
 - Landmark interiors are interpretive models built from written descriptions; they are not scans and contain no furniture or artwork data.
 - Tower coverage rings are a schematic animation, not a radio propagation model. Tower positions come from OSM and are only as complete as OSM's coverage.
+- POIs come from OSM and carry no imagery; there is no photo source in the tile schema used here.
+- Aircraft "destination" is not available from OpenSky's public state vectors; the dashed ray is the current heading, not a route.
+- Distant building detail is only as complete as OSM: where a footprint is missing, nothing is invented.
 - Traffic and crowd overlays are simulations, not observed vehicle counts or footfall.
 - Bundled landmark imagery is AI-generated illustration, captioned in the interface.
 - No person-level tracking, no face recognition, no watchlists, no surveillance workflows.

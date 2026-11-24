@@ -656,3 +656,31 @@ a { color: inherit; text-decoration: none; }
   from { opacity: 0; transform: translate(16px, -50%) scale(0.96); }
   to { opacity: 1; transform: translate(16px, -50%) scale(1); }
 }
+
+/* ---- News language filter ---- */
+.lang-tabs button {
+  padding: 3px 7px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  color: #7f97a8;
+  font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.lang-tabs button:hover { color: #cfe9f3; }
+.lang-tabs button.active {
+  color: #b8f7cf;
+  border-color: rgba(124, 231, 164, 0.45);
+  background: rgba(124, 231, 164, 0.12);
+}
+.lang-badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(124, 231, 164, 0.14);
+  color: #9ef2bd;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
