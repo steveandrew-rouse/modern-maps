@@ -4,6 +4,10 @@ import type { Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
 import { ArrowLeft, Building2, Compass, Layers3, MapPin, Move3d } from 'lucide-react'
 import CityScene, { type BuildingInfo, type CityControls } from './CityScene'
 import { fetchCityModel, taggedHeight, type CityModel } from './citymodel'
+import {
+  TRAVEL_MODES, fetchAirportFlights, planRoute,
+  type AirportFlights, type RouteResult, type TravelMode,
+} from './places'
 
 export type CityTarget = { name: string; lat: number; lng: number; kind?: string }
 
@@ -117,6 +121,21 @@ function cityStyle(): StyleSpecification {
         paint: { 'text-color': '#eafaff', 'text-halo-color': '#021117', 'text-halo-width': 2 },
       },
       {
+        id: 'airport-dot', type: 'circle', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 8,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 13, 5],
+          'circle-color': '#8ff0ff', 'circle-stroke-width': 1.4, 'circle-stroke-color': '#021117',
+        },
+      },
+      {
+        id: 'airport-label', type: 'symbol', source: 'openmaptiles', 'source-layer': 'aerodrome_label', minzoom: 8,
+        layout: {
+          'text-field': ['coalesce', ['get', 'name:latin'], ['get', 'name'], ['get', 'iata'], 'Airport'],
+          'text-size': 9.5, 'text-font': LABEL_FONT, 'text-offset': [0, 1], 'text-anchor': 'top', 'text-padding': 2,
+        },
+        paint: { 'text-color': '#a9e7f7', 'text-halo-color': '#021117', 'text-halo-width': 1.2 },
+      },
+      {
         id: 'poi-dot', type: 'circle', source: 'openmaptiles', 'source-layer': 'poi', minzoom: 14,
         filter: ['has', 'name'],
         paint: {
@@ -140,6 +159,8 @@ function cityStyle(): StyleSpecification {
     ],
   }
 }
+
+type AirportTarget = { name: string; iata: string | null; icao: string | null; ele: number | null; lng: number; lat: number }
 
 type Nearby = { name: string; kind: string; distance: number }
 type Detail = {
@@ -235,11 +256,23 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
   const container = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const pad = useRef<CityControls>({ forward: 0, strafe: 0, turn: 0, lift: 0 })
+  const actions = useRef<{
+    travel: TravelMode | null
+    airport: (feature: maplibregl.MapGeoJSONFeature) => void
+    route: (lng: number, lat: number) => void
+  }>({ travel: null, airport: () => {}, route: () => {} })
   const [mode, setMode] = useState<'2d' | '3d'>('2d')
   const [hud, setHud] = useState({ zoom: 14.6, bearing: 0, lat: city.lat, lng: city.lng })
   const [detail, setDetail] = useState<Detail | null>(null)
-  const [panel, setPanel] = useState<'layers' | 'legend' | null>('layers')
+  const [panel, setPanel] = useState<'layers' | 'legend' | 'travel' | null>('layers')
   const [layers, setLayers] = useState({ buildings3d: false, labels: true, pois: true, streets: true })
+  const [travel, setTravel] = useState<TravelMode | null>(null)
+  const [route, setRoute] = useState<RouteResult | null>(null)
+  const [routeBusy, setRouteBusy] = useState(false)
+  const [routeError, setRouteError] = useState<string | null>(null)
+  const [airport, setAirport] = useState<AirportTarget | null>(null)
+  const [flights, setFlights] = useState<AirportFlights | null>(null)
+  const [flightsError, setFlightsError] = useState<string | null>(null)
 
   const [model, setModel] = useState<CityModel | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -280,20 +313,49 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
           'circle-stroke-width': 1.4, 'circle-stroke-color': '#021117',
         },
       })
+      map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({
+        id: 'route-halo', type: 'line', source: 'route',
+        paint: { 'line-color': '#37d2ee', 'line-width': 11, 'line-opacity': 0.22, 'line-blur': 5 },
+      })
+      map.addLayer({
+        id: 'route-line', type: 'line', source: 'route',
+        paint: { 'line-color': '#7fe3ff', 'line-width': 3.4, 'line-dasharray': [2, 1.4] },
+      })
+      map.addSource('route-end', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({
+        id: 'route-end', type: 'circle', source: 'route-end',
+        paint: { 'circle-radius': 6, 'circle-color': '#ffd166', 'circle-stroke-width': 1.6, 'circle-stroke-color': '#021117' },
+      })
     })
 
     map.on('click', (event) => {
       const lng = event.lngLat.lng
       const lat = event.lngLat.lat
-      const next = describeAt(map, lng, lat)
-      setDetail(next)
-      if (next) {
-        const picked = map.getSource('picked') as maplibregl.GeoJSONSource | undefined
-        picked?.setData({
-          type: 'FeatureCollection',
-          features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [lng, lat] } }],
-        })
+
+      const airportLayers = ['airport-dot', 'airport-label'].filter((id) => map.getLayer(id))
+      const airportFeature = airportLayers.length
+        ? map.queryRenderedFeatures(event.point, { layers: airportLayers })[0]
+        : undefined
+      if (airportFeature) {
+        actions.current.airport(airportFeature)
+        return
       }
+
+      const picked = map.getSource('picked') as maplibregl.GeoJSONSource | undefined
+      picked?.setData({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [lng, lat] } }],
+      })
+
+      if (actions.current.travel) {
+        actions.current.route(lng, lat)
+        return
+      }
+
+      setAirport(null)
+      setFlights(null)
+      setDetail(describeAt(map, lng, lat))
     })
     map.on('move', () => {
       const center = map.getCenter()
@@ -394,6 +456,77 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
     if (view === 'street') map.easeTo({ pitch: 78, zoom: 17.4, duration: 1100 })
   }
 
+  const openAirport = (feature: maplibregl.MapGeoJSONFeature) => {
+    const properties = feature.properties ?? {}
+    const geometry = (feature.geometry ?? { type: 'Point', coordinates: [hud.lng, hud.lat] }) as {
+      type: string
+      coordinates?: [number, number]
+    }
+    const point = geometry.type === 'Point' ? geometry.coordinates ?? null : null
+    const icao = properties.icao ? String(properties.icao) : null
+    const target: AirportTarget = {
+      name: String(properties['name:latin'] ?? properties.name ?? properties.iata ?? 'Airport'),
+      iata: properties.iata ? String(properties.iata) : null,
+      icao,
+      ele: properties.ele != null ? Number(properties.ele) : null,
+      lng: point ? point[0] : hud.lng,
+      lat: point ? point[1] : hud.lat,
+    }
+    setAirport(target)
+    setDetail(null)
+    setFlights(null)
+    setFlightsError(null)
+    if (!icao) {
+      setFlightsError('This airport has no ICAO code in the tiles, so its movements cannot be looked up.')
+      return
+    }
+    fetchAirportFlights(icao)
+      .then((payload) => setFlights(payload))
+      .catch((cause: unknown) => setFlightsError(cause instanceof Error ? cause.message : 'Airport feed unavailable'))
+  }
+
+  const startRoute = (lng: number, lat: number) => {
+    const mode = actions.current.travel
+    if (!mode) return
+    setRouteBusy(true)
+    setRouteError(null)
+    planRoute(mode, [city.lng, city.lat], [lng, lat])
+      .then((result) => {
+        setRoute(result)
+        const map = mapRef.current
+        if (!map) return
+        const routeSource = map.getSource('route') as maplibregl.GeoJSONSource | undefined
+        routeSource?.setData({
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', properties: {}, geometry: result.geometry as never }],
+        })
+        const endSource = map.getSource('route-end') as maplibregl.GeoJSONSource | undefined
+        endSource?.setData({
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [lng, lat] } }],
+        })
+        map.fitBounds(
+          [[Math.min(city.lng, lng), Math.min(city.lat, lat)], [Math.max(city.lng, lng), Math.max(city.lat, lat)]],
+          { padding: 130, duration: 900, maxZoom: 16 },
+        )
+      })
+      .catch((cause: unknown) => setRouteError(cause instanceof Error ? cause.message : 'No route found'))
+      .finally(() => setRouteBusy(false))
+  }
+
+  actions.current = { travel, airport: openAirport, route: startRoute }
+
+  const clearTravel = () => {
+    setTravel(null)
+    setRoute(null)
+    setRouteError(null)
+    const map = mapRef.current
+    const routeSource = map?.getSource('route') as maplibregl.GeoJSONSource | undefined
+    routeSource?.setData({ type: 'FeatureCollection', features: [] })
+    const endSource = map?.getSource('route-end') as maplibregl.GeoJSONSource | undefined
+    endSource?.setData({ type: 'FeatureCollection', features: [] })
+  }
+
   const hold = (key: keyof CityControls, value: number) => ({
     onPointerDown: () => { pad.current[key] = value },
     onPointerUp: () => { pad.current[key] = 0 },
@@ -425,6 +558,9 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
           <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>2D MAP</button>
           <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>3D CITY</button>
         </div>
+        <button className={`city-legend-toggle ${panel === 'travel' ? 'active' : ''}`} onClick={() => setPanel(panel === 'travel' ? null : 'travel')}>
+          <Compass size={11} /> TRAVEL
+        </button>
         <button className={`city-legend-toggle ${panel === 'legend' ? 'active' : ''}`} onClick={() => setPanel(panel === 'legend' ? null : 'legend')}>
           <Building2 size={11} /> SECTORS
         </button>
@@ -455,6 +591,47 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
         </aside>
       )}
 
+      {mode === '2d' && panel === 'travel' && (
+        <aside className="city-panel city-travel">
+          <div className="city-panel-head">DRIVE MODE</div>
+          <div className="city-travel-list">
+            {TRAVEL_MODES.map((entry) => (
+              <button
+                key={entry.id}
+                className={`city-travel-mode ${travel === entry.id ? 'active' : ''}`}
+                onClick={() => { setTravel(travel === entry.id ? null : entry.id); setRoute(null); setRouteError(null) }}
+              >
+                <span className="city-travel-icon">{entry.icon}</span>
+                <span className="city-travel-text">
+                  <b>{entry.label}</b>
+                  <small>{entry.detail}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          {travel && !route && !routeBusy && (
+            <div className="city-travel-hint">
+              Click a destination on the map. Trips start at the centre of {city.name}.
+            </div>
+          )}
+          {routeBusy && <div className="city-travel-hint">Planning the {travel} route…</div>}
+          {routeError && <div className="city-travel-error">{routeError}</div>}
+          {route && (
+            <div className="city-route">
+              <div className="city-route-mode">{TRAVEL_MODES.find((entry) => entry.id === route.mode)?.label}</div>
+              <div className="city-route-row"><span>Distance</span><b>{route.distance < 1000 ? `${Math.round(route.distance)} m` : `${(route.distance / 1000).toFixed(1)} km`}</b></div>
+              <div className="city-route-row"><span>Time</span><b>{Math.max(1, Math.round(route.duration / 60))} min</b></div>
+              <div className="city-route-note">
+                {route.estimate
+                  ? 'Estimated from the driving route with a mode factor — not a timetable.'
+                  : 'Street route from the public OSRM service.'}
+              </div>
+              <button className="city-route-clear" onClick={clearTravel}>CLEAR</button>
+            </div>
+          )}
+        </aside>
+      )}
+
       {mode === '2d' && panel === 'legend' && (
         <aside className="city-panel city-legend-2d">
           <div className="city-panel-head">MAP KEY</div>
@@ -466,6 +643,64 @@ export default function CityView({ city, onClose }: { city: CityTarget; onClose:
           <span><i style={{ background: '#7ce7a4' }} /> Schools & health</span>
           <span><i style={{ background: '#d9a95f' }} /> Motorway</span>
           <span><i style={{ background: '#2fa8d8' }} /> Water</span>
+        </aside>
+      )}
+
+      {mode === '2d' && airport && (
+        <aside className="city-panel city-airport">
+          <button className="city-detail-close" onClick={() => { setAirport(null); setFlights(null) }}>×</button>
+          <div className="city-panel-head">AIRPORT</div>
+          <b className="city-detail-title">{airport.name}</b>
+          <small className="city-detail-kind">
+            {[airport.iata, airport.icao].filter(Boolean).join(' · ') || 'no codes in tiles'}
+            {airport.ele != null ? ` · ${Math.round(airport.ele)} m` : ''}
+          </small>
+          <div className="city-detail-rows">
+            <div><span>Coordinates</span><b>{airport.lat.toFixed(5)}, {airport.lng.toFixed(5)}</b></div>
+          </div>
+          <div className="city-airport-views">
+            <button onClick={() => mapRef.current?.easeTo({ center: [airport.lng, airport.lat], zoom: 15.4, pitch: 55, duration: 1100 })}>AERIAL</button>
+            <button onClick={() => mapRef.current?.easeTo({ center: [airport.lng, airport.lat], zoom: 17.2, pitch: 78, duration: 1100 })}>GROUND</button>
+          </div>
+
+          <div className="city-detail-sub">RECENT ARRIVALS</div>
+          {!flights && !flightsError && <div className="city-airport-note">Loading movements for {airport.icao}…</div>}
+          {flightsError && <div className="city-airport-note">{flightsError}</div>}
+          {flights && (
+            <ul className="city-airport-list">
+              {flights.arrivals.length === 0 && <li><span>No arrivals recorded</span></li>}
+              {flights.arrivals.slice(0, 8).map((movement) => (
+                <li key={`arr-${movement.icao24}-${movement.time}`}>
+                  <span>{movement.callsign}</span>
+                  <small>{movement.other_airport ?? 'origin unknown'} · {movement.time ? new Date(movement.time * 1000).toISOString().slice(11, 16) : '—'} UTC</small>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="city-detail-sub">RECENT DEPARTURES</div>
+          {flights && (
+            <ul className="city-airport-list">
+              {flights.departures.length === 0 && <li><span>No departures recorded</span></li>}
+              {flights.departures.slice(0, 8).map((movement) => (
+                <li key={`dep-${movement.icao24}-${movement.time}`}>
+                  <span>{movement.callsign}</span>
+                  <small>{movement.other_airport ?? 'destination unknown'} · {movement.time ? new Date(movement.time * 1000).toISOString().slice(11, 16) : '—'} UTC</small>
+                </li>
+              ))}
+            </ul>
+          )}
+          {flights && (
+            <div className="city-airport-note">
+              Tracks recorded by OpenSky in the last {flights.window_minutes} min. Not a timetable, and no future schedule is public.
+            </div>
+          )}
+          <div className="city-airport-links">
+            {airport.iata && (
+              <a href={`https://www.google.com/travel/flights?q=flights%20to%20${airport.iata}`} target="_blank" rel="noreferrer">GOOGLE FLIGHTS</a>
+            )}
+            <a href={`https://www.google.com/maps/search/?api=1&query=${airport.lat},${airport.lng}`} target="_blank" rel="noreferrer">MAPS</a>
+          </div>
         </aside>
       )}
 

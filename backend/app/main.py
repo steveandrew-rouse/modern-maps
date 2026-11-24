@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .aggregate import Aggregator
 from .analyst import answer
 from .models import AnalystRequest, NewsItem, Signal, Snapshot, SourceStatus
+from .sources.airports import fetch_airport
 from .sources.citymodel import fetch_city
 from .sources.towers import fetch_towers, to_geojson
 
@@ -149,6 +150,46 @@ def create_app(aggregator: Aggregator | None = None, *, load_feeds: bool = True)
                 )
             except (httpx.HTTPError, ValueError, RuntimeError, TimeoutError) as exc:
                 raise HTTPException(status_code=502, detail=f"OpenStreetMap unavailable: {exc}") from exc
+
+    @app.get("/api/v1/airport")
+    async def get_airport(icao: str = Query(min_length=4, max_length=4)) -> dict:
+        """Recent arrivals and departures recorded for an airport (OpenSky)."""
+        if not icao.isalpha():
+            raise HTTPException(status_code=400, detail="ICAO code must be four letters")
+        async with httpx.AsyncClient() as client:
+            try:
+                return await fetch_airport(client, icao)
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                raise HTTPException(status_code=502, detail=f"OpenSky unavailable: {exc}") from exc
+
+    @app.get("/api/v1/route")
+    async def get_route(
+        profile: str = Query(pattern="^(foot|bike|driving)$"),
+        From: str = Query(alias="from", pattern="^-?[0-9.]+,-?[0-9.]+$"),
+        To: str = Query(alias="to", pattern="^-?[0-9.]+,-?[0-9.]+$"),
+    ) -> dict:
+        """Street routing between two points, proxied to the public OSRM service."""
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(
+                    f"https://router.project-osrm.org/route/v1/{profile}/{From};{To}",
+                    params={"overview": "full", "geometries": "geojson"},
+                    headers={"User-Agent": "india-ai-os-maps/1.0 (travel modes)"},
+                    timeout=20.0,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise HTTPException(status_code=502, detail=f"Routing unavailable: {exc}") from exc
+        route = (payload.get("routes") or [None])[0]
+        if not route:
+            raise HTTPException(status_code=404, detail="No route found")
+        return {
+            "distance": route.get("distance", 0),
+            "duration": route.get("duration", 0),
+            "geometry": route.get("geometry"),
+            "profile": profile,
+        }
 
     return app
 
