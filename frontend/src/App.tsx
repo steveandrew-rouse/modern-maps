@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import type { GeoJSONSource, Map as MapLibreMap, StyleSpecification } from 'maplibre-gl'
 import {
-  Activity, AlertTriangle, ArrowUpRight, Bot, ChevronDown, Database, Globe2, Layers3,
-  Plane, RefreshCw, Search, ShieldCheck, Sparkles, Thermometer, Wind,
+  Activity, AlertTriangle, ArrowLeft, ArrowUpRight, Bot, Building2, Camera, Car,
+  ChevronDown, Database, Footprints, Globe2, Grid3x3, Layers3, MapPin, Plane, RefreshCw, Search,
+  ShieldCheck, Sparkles, Thermometer, Wind, X,
 } from 'lucide-react'
 import type { AnalystResponse, Layer, NewsItem, Severity, Signal, Snapshot } from './types'
+import { LANDMARKS, LANDMARK_BY_ID, type Landmark } from './landmarks'
+import LandmarkViewer from './LandmarkViewer'
 
 const API = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 const LAYER_ORDER: Layer[] = ['earthquake', 'alert', 'weather', 'air', 'flight']
@@ -45,6 +48,10 @@ const MAP_STYLE: StyleSpecification = {
       tileSize: 256,
       maxzoom: 15,
     },
+    openmaptiles: {
+      type: 'vector',
+      url: 'https://tiles.openfreemap.org/planet',
+    },
   },
   layers: [
     { id: 'background', type: 'background', paint: { 'background-color': '#04101a' } },
@@ -61,9 +68,25 @@ const MAP_STYLE: StyleSpecification = {
         'hillshade-accent-color': '#0b2436',
       },
     },
+    {
+      id: 'buildings-3d', type: 'fill-extrusion', source: 'openmaptiles', 'source-layer': 'building',
+      minzoom: 13.2,
+      paint: {
+        'fill-extrusion-color': [
+          'interpolate', ['linear'], ['coalesce', ['get', 'render_height'], 12],
+          0, '#0d3d52', 30, '#1a7f8e', 90, '#37c1b6', 220, '#9af3ff',
+        ],
+        'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 10],
+        'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+        'fill-extrusion-opacity': 0.86,
+        'fill-extrusion-vertical-gradient': true,
+      },
+    },
   ],
   terrain: { source: 'terrain', exaggeration: 1.35 },
 }
+
+type Overlays = { buildings: boolean; traffic: boolean; crowd: boolean }
 
 function toFeatureCollection(signals: Signal[]) {
   return {
@@ -78,24 +101,30 @@ function toFeatureCollection(signals: Signal[]) {
           layer: signal.layer,
           severity: signal.severity,
           magnitude: Number(signal.metrics.magnitude ?? 0),
-          aqi: Number(signal.metrics.us_aqi ?? 0),
         },
       })),
   }
 }
 
-function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
+function MapCanvas({ signals, activeLayers, selectedId, overlays, mode, focus, selectedLandmarkId, asciiMode, onSelectSignal, onSelectLandmark, onPick }: {
   signals: Signal[]
   activeLayers: Layer[]
   selectedId: string | null
-  onSelect: (id: string) => void
+  overlays: Overlays
   mode: '2d' | '3d'
+  focus: [number, number]
+  selectedLandmarkId: string | null
+  asciiMode: boolean
+  onSelectSignal: (id: string) => void
+  onSelectLandmark: (id: string) => void
+  onPick: (lat: number, lng: number) => void
 }) {
   const container = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
-  const onSelectRef = useRef(onSelect)
-  onSelectRef.current = onSelect
+  const handlers = useRef({ onSelectSignal, onSelectLandmark, onPick })
+  handlers.current = { onSelectSignal, onSelectLandmark, onPick }
   const [ready, setReady] = useState(false)
+  const [ascii, setAscii] = useState<{ lines: string[]; coords: string } | null>(null)
 
   useEffect(() => {
     if (!container.current || mapRef.current) return
@@ -107,8 +136,9 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
       pitch: 50,
       bearing: -8,
       minZoom: 2.6,
-      maxZoom: 16,
+      maxZoom: 18,
       maxPitch: 80,
+      canvasContextAttributes: { preserveDrawingBuffer: true },
       attributionControl: false,
     })
     mapRef.current = map
@@ -117,12 +147,8 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
     map.on('load', () => {
       map.resize()
       map.setSky({
-        'sky-color': '#0a2033',
-        'horizon-color': '#2b5673',
-        'fog-color': '#08131d',
-        'sky-horizon-blend': 0.6,
-        'horizon-fog-blend': 0.6,
-        'fog-ground-blend': 0.45,
+        'sky-color': '#0a2033', 'horizon-color': '#2b5673', 'fog-color': '#08131d',
+        'sky-horizon-blend': 0.6, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.45,
         'atmosphere-blend': 0.7,
       })
       setReady(true)
@@ -146,64 +172,120 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
     if (!ready) return
     const map = mapRef.current
     if (!map) return
-    if (!map.getSource('signals')) {
-      map.addSource('signals', { type: 'geojson', data: toFeatureCollection(signals) })
-      map.addLayer({
-        id: 'lyr-flight', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
-        paint: {
-          'circle-radius': 2.6, 'circle-color': LAYER_META.flight.colour, 'circle-opacity': 0.85,
-          'circle-stroke-width': 0.5, 'circle-stroke-color': '#04221a',
-        },
-      })
-      map.addLayer({
-        id: 'lyr-weather', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'weather'],
-        paint: {
-          'circle-radius': 5, 'circle-color': LAYER_META.weather.colour, 'circle-opacity': 0.9,
-          'circle-stroke-width': 1, 'circle-stroke-color': '#eafcff',
-        },
-      })
-      map.addLayer({
-        id: 'lyr-air', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'air'],
-        paint: {
-          'circle-radius': 6, 'circle-color': LAYER_META.air.colour, 'circle-opacity': 0.7,
-          'circle-stroke-width': 1, 'circle-stroke-color': '#efe6ff',
-        },
-      })
-      map.addLayer({
-        id: 'lyr-alert', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'alert'],
-        paint: {
-          'circle-radius': 9, 'circle-color': SEVERITY_COLOUR as never, 'circle-opacity': 0.55,
-          'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffe6b8',
-        },
-      })
-      map.addLayer({
-        id: 'lyr-earthquake', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'earthquake'],
-        paint: {
-          'circle-radius': ['interpolate', ['linear'], ['get', 'magnitude'], 2.5, 5, 6, 14],
-          'circle-color': SEVERITY_COLOUR as never, 'circle-opacity': 0.85,
-          'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffe1dc',
-        },
-      })
-      map.addLayer({
-        id: 'lyr-selected', type: 'circle', source: 'signals', filter: ['==', ['get', 'id'], '__none__'],
-        paint: {
-          'circle-radius': 15, 'circle-color': 'rgba(0,0,0,0)',
-          'circle-stroke-width': 2, 'circle-stroke-color': '#33e08a',
-        },
-      })
-
-      for (const id of ['lyr-flight', 'lyr-weather', 'lyr-air', 'lyr-alert', 'lyr-earthquake']) {
-        map.on('click', id, (event) => {
-          const feature = event.features?.[0]
-          if (feature?.properties?.id) onSelectRef.current(String(feature.properties.id))
-        })
-        map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
-        map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
-      }
-    } else {
-      const source = map.getSource('signals') as GeoJSONSource | undefined
-      source?.setData(toFeatureCollection(signals))
+    if (map.getSource('signals')) {
+      ;(map.getSource('signals') as GeoJSONSource).setData(toFeatureCollection(signals))
+      return
     }
+    map.addSource('signals', { type: 'geojson', data: toFeatureCollection(signals) })
+    map.addSource('landmarks', {
+      type: 'geojson',
+      data: {
+        type: 'FeatureCollection',
+        features: LANDMARKS.map((landmark) => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [landmark.lng, landmark.lat] },
+          properties: { id: landmark.id, name: landmark.name },
+        })),
+      },
+    })
+    map.addSource('traffic', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    map.addSource('crowd', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+    map.addSource('picked', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+
+    map.addLayer({
+      id: 'lyr-flight', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'flight'],
+      paint: {
+        'circle-radius': 2.6, 'circle-color': LAYER_META.flight.colour, 'circle-opacity': 0.85,
+        'circle-stroke-width': 0.5, 'circle-stroke-color': '#04221a',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-weather', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'weather'],
+      paint: {
+        'circle-radius': 5, 'circle-color': LAYER_META.weather.colour, 'circle-opacity': 0.9,
+        'circle-stroke-width': 1, 'circle-stroke-color': '#eafcff',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-air', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'air'],
+      paint: {
+        'circle-radius': 6, 'circle-color': LAYER_META.air.colour, 'circle-opacity': 0.7,
+        'circle-stroke-width': 1, 'circle-stroke-color': '#efe6ff',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-alert', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'alert'],
+      paint: {
+        'circle-radius': 9, 'circle-color': SEVERITY_COLOUR as never, 'circle-opacity': 0.55,
+        'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffe6b8',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-earthquake', type: 'circle', source: 'signals', filter: ['==', ['get', 'layer'], 'earthquake'],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['get', 'magnitude'], 2.5, 5, 6, 14],
+        'circle-color': SEVERITY_COLOUR as never, 'circle-opacity': 0.85,
+        'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffe1dc',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-crowd', type: 'circle', source: 'crowd',
+      paint: {
+        'circle-radius': ['get', 'size'], 'circle-color': '#ffd166', 'circle-opacity': 0.32,
+        'circle-blur': 0.6,
+      },
+    })
+    map.addLayer({
+      id: 'lyr-traffic', type: 'circle', source: 'traffic',
+      paint: {
+        'circle-radius': ['match', ['get', 'mode'], 'bus', 3.4, 'auto', 2.4, 2],
+        'circle-color': ['match', ['get', 'mode'], 'bus', '#ff8a3d', 'auto', '#7ce7a4', '#ffd166'],
+        'circle-opacity': 0.95, 'circle-stroke-width': 0.6, 'circle-stroke-color': '#04120b',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-selected', type: 'circle', source: 'signals', filter: ['==', ['get', 'id'], '__none__'],
+      paint: {
+        'circle-radius': 15, 'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-width': 2, 'circle-stroke-color': '#33e08a',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-landmark', type: 'circle', source: 'landmarks',
+      paint: {
+        'circle-radius': 6.5, 'circle-color': '#111b17', 'circle-opacity': 0.9,
+        'circle-stroke-width': 2, 'circle-stroke-color': '#ffd166',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-landmark-selected', type: 'circle', source: 'landmarks', filter: ['==', ['get', 'id'], '__none__'],
+      paint: {
+        'circle-radius': 12, 'circle-color': 'rgba(0,0,0,0)',
+        'circle-stroke-width': 2, 'circle-stroke-color': '#ffd166',
+      },
+    })
+    map.addLayer({
+      id: 'lyr-picked', type: 'circle', source: 'picked',
+      paint: {
+        'circle-radius': 5, 'circle-color': '#33e08a', 'circle-stroke-width': 2,
+        'circle-stroke-color': '#04120b',
+      },
+    })
+
+    for (const id of ['lyr-flight', 'lyr-weather', 'lyr-air', 'lyr-alert', 'lyr-earthquake']) {
+      map.on('click', id, (event) => {
+        const feature = event.features?.[0]
+        if (feature?.properties?.id) handlers.current.onSelectSignal(String(feature.properties.id))
+      })
+      map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer' })
+      map.on('mouseleave', id, () => { map.getCanvas().style.cursor = '' })
+    }
+    map.on('click', 'lyr-landmark', (event) => {
+      const feature = event.features?.[0]
+      if (feature?.properties?.id) handlers.current.onSelectLandmark(String(feature.properties.id))
+    })
+    map.on('mouseenter', 'lyr-landmark', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'lyr-landmark', () => { map.getCanvas().style.cursor = '' })
   }, [ready, signals])
 
   useEffect(() => {
@@ -213,10 +295,7 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
     for (const layer of LAYER_ORDER) {
       const id = `lyr-${layer}`
       if (!map.getLayer(id)) continue
-      map.setFilter(
-        id,
-        activeLayers.includes(layer) ? ['==', ['get', 'layer'], layer] : ['==', ['get', 'layer'], '__off__'],
-      )
+      map.setFilter(id, activeLayers.includes(layer) ? ['==', ['get', 'layer'], layer] : ['==', ['get', 'layer'], '__off__'])
     }
   }, [ready, activeLayers])
 
@@ -224,18 +303,15 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
     if (!ready) return
     const map = mapRef.current
     if (!map) return
-    if (map.getLayer('lyr-selected')) {
-      map.setFilter('lyr-selected', ['==', ['get', 'id'], selectedId ?? '__none__'])
+    if (map.getLayer('lyr-selected')) map.setFilter('lyr-selected', ['==', ['get', 'id'], selectedId ?? '__none__'])
+    if (map.getLayer('lyr-landmark-selected')) {
+      map.setFilter('lyr-landmark-selected', ['==', ['get', 'id'], selectedLandmarkId ?? '__none__'])
     }
     const selected = signals.find((signal) => signal.id === selectedId)
     if (selected && selected.lat !== null && selected.lng !== null) {
-      map.easeTo({
-        center: [selected.lng, selected.lat],
-        zoom: Math.max(map.getZoom(), 5.2),
-        duration: 700,
-      })
+      map.easeTo({ center: [selected.lng, selected.lat], zoom: Math.max(map.getZoom(), 5.2), duration: 700 })
     }
-  }, [ready, selectedId, signals])
+  }, [ready, selectedId, selectedLandmarkId, signals])
 
   useEffect(() => {
     if (!ready) return
@@ -250,7 +326,159 @@ function MapCanvas({ signals, activeLayers, selectedId, onSelect, mode }: {
     }
   }, [ready, mode])
 
-  return <div className="map-canvas" ref={container} />
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map || !map.getLayer('buildings-3d')) return
+    map.setLayoutProperty('buildings-3d', 'visibility', overlays.buildings ? 'visible' : 'none')
+  }, [ready, overlays.buildings])
+
+  // Simulated traffic: vehicles circulating around the focused city.
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map || !map.getLayer('lyr-traffic')) return
+    map.setLayoutProperty('lyr-traffic', 'visibility', overlays.traffic ? 'visible' : 'none')
+    if (!overlays.traffic) return
+
+    const source = map.getSource('traffic') as GeoJSONSource | undefined
+    if (!source) return
+    const [lng, lat] = focus
+    const vehicles = Array.from({ length: 70 }, (_, index) => ({
+      angle: (index / 70) * Math.PI * 2 + Math.random(),
+      radius: 0.012 + Math.random() * 0.05,
+      speed: 0.006 + Math.random() * 0.012,
+      mode: index % 9 === 0 ? 'bus' : index % 3 === 0 ? 'auto' : 'car',
+    }))
+    let frame = 0
+    let last = 0
+    const animate = (time: number) => {
+      frame = requestAnimationFrame(animate)
+      if (time - last < 90) return
+      last = time
+      source.setData({
+        type: 'FeatureCollection',
+        features: vehicles.map((vehicle, index) => {
+          vehicle.angle += vehicle.speed * 0.12
+          const latitude = lat + Math.sin(vehicle.angle) * vehicle.radius * 0.72
+          const longitude = lng + Math.cos(vehicle.angle) * vehicle.radius
+          return {
+            type: 'Feature' as const,
+            geometry: { type: 'Point' as const, coordinates: [longitude, latitude] },
+            properties: { id: `veh-${index}`, mode: vehicle.mode },
+          }
+        }),
+      })
+    }
+    frame = requestAnimationFrame(animate)
+    return () => cancelAnimationFrame(frame)
+  }, [ready, overlays.traffic, focus])
+
+  // Simulated crowd: pulsing density near the focused place.
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map || !map.getLayer('lyr-crowd')) return
+    map.setLayoutProperty('lyr-crowd', 'visibility', overlays.crowd ? 'visible' : 'none')
+    if (!overlays.crowd) return
+
+    const source = map.getSource('crowd') as GeoJSONSource | undefined
+    if (!source) return
+    const [lng, lat] = focus
+    source.setData({
+      type: 'FeatureCollection',
+      features: Array.from({ length: 110 }, (_, index) => {
+        const angle = Math.random() * Math.PI * 2
+        const radius = Math.random() * 0.02
+        return {
+          type: 'Feature' as const,
+          geometry: { type: 'Point' as const, coordinates: [lng + Math.cos(angle) * radius, lat + Math.sin(angle) * radius * 0.7] },
+          properties: { id: `crowd-${index}`, size: 6 + Math.random() * 18 },
+        }
+      }),
+    })
+    let frame = 0
+    const start = performance.now()
+    const pulse = () => {
+      frame = requestAnimationFrame(pulse)
+      const phase = (Math.sin((performance.now() - start) / 520) + 1) / 2
+      map.setPaintProperty('lyr-crowd', 'circle-opacity', 0.18 + phase * 0.2)
+    }
+    pulse()
+    return () => cancelAnimationFrame(frame)
+  }, [ready, overlays.crowd, focus])
+
+  useEffect(() => {
+    if (!ready) return
+    const map = mapRef.current
+    if (!map) return
+    map.easeTo({ center: focus, zoom: Math.max(map.getZoom(), 5.6), duration: 900 })
+  }, [ready, focus])
+
+  // ASCII projection of the rendered map; click a cell to locate that point.
+  useEffect(() => {
+    if (!asciiMode || !ready) return
+    const map = mapRef.current
+    if (!map) return
+    const cols = 64
+    const rows = 24
+    const offscreen = document.createElement('canvas')
+    offscreen.width = cols
+    offscreen.height = rows
+    const context = offscreen.getContext('2d', { willReadFrequently: true })
+    const ramp = ' .:-=+*#%@'
+
+    const capture = () => {
+      const canvas = map.getCanvas()
+      if (!canvas || !context) return
+      context.drawImage(canvas, 0, 0, cols, rows)
+      const { data } = context.getImageData(0, 0, cols, rows)
+      const lines: string[] = []
+      for (let y = 0; y < rows; y += 1) {
+        let line = ''
+        for (let x = 0; x < cols; x += 1) {
+          const index = (y * cols + x) * 4
+          const luminance = (data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114) / 255
+          line += ramp[Math.min(ramp.length - 1, Math.floor(luminance * ramp.length))]
+        }
+        lines.push(line)
+      }
+      const center = map.getCenter()
+      setAscii({ lines, coords: `${center.lat.toFixed(3)}, ${center.lng.toFixed(3)}` })
+    }
+
+    capture()
+    const timer = setInterval(capture, 900)
+    return () => clearInterval(timer)
+  }, [asciiMode, ready])
+
+  const handleAsciiClick = (event: MouseEvent<HTMLPreElement>) => {
+    const map = mapRef.current
+    if (!map) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const y = event.clientY - rect.top
+    const point = map.unproject([x, y])
+    handlers.current.onPick(point.lat, point.lng)
+  }
+
+  return (
+    <>
+      <div className="map-canvas" ref={container} />
+      {asciiMode && ascii && (
+        <div className="ascii-shell">
+          <div className="ascii-head">
+            <span><Grid3x3 size={11} /> ASCII PROJECTION</span>
+            <span>{ascii.coords}</span>
+            <span className="ascii-hint">CLICK A CELL TO LOCATE</span>
+          </div>
+          <pre className="ascii-grid" onClick={handleAsciiClick}>
+            {ascii.lines.join('\n')}
+          </pre>
+        </div>
+      )}
+    </>
+  )
 }
 
 function relative(iso: string | null, now: Date): string {
@@ -264,6 +492,119 @@ function relative(iso: string | null, now: Date): string {
   return `${Math.round(seconds / 86400)}d`
 }
 
+type DetailTab = 'view' | 'history' | 'materials' | 'artifacts'
+
+function LandmarkPanel({ landmark, tab, onTab, onClose }: {
+  landmark: Landmark
+  tab: DetailTab
+  onTab: (tab: DetailTab) => void
+  onClose: () => void
+}) {
+  const tabs: { id: DetailTab; label: string }[] = [
+    { id: 'view', label: '360° VIEW' },
+    { id: 'history', label: 'HISTORY' },
+    { id: 'materials', label: 'MATERIALS' },
+    { id: 'artifacts', label: 'ARTIFACTS' },
+  ]
+  return (
+    <section className="rail-panel landmark-panel">
+      <div className="landmark-head">
+        <button className="back-button" onClick={onClose}><ArrowLeft size={13} /></button>
+        <div className="landmark-titles">
+          <b>{landmark.name}</b>
+          <small>{landmark.city}, {landmark.state} · {landmark.built}</small>
+        </div>
+        <button className="icon-button tiny" onClick={onClose} title="Close"><X size={13} /></button>
+      </div>
+      <div className="landmark-badges">
+        {landmark.unesco && <span className="unesco">UNESCO</span>}
+        <span>{landmark.kind.toUpperCase()}</span>
+        <span>{landmark.lat.toFixed(3)}, {landmark.lng.toFixed(3)}</span>
+      </div>
+      <div className="landmark-tabs">
+        {tabs.map((item) => (
+          <button key={item.id} className={tab === item.id ? 'active' : ''} onClick={() => onTab(item.id)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="landmark-body">
+        {tab === 'view' && (
+          <>
+            <LandmarkViewer landmark={landmark} />
+            <p className="landmark-summary">{landmark.summary}</p>
+            {landmark.images.length > 0 && (
+              <div className="image-strip">
+                {landmark.images.map((image) => (
+                  <figure key={image.src}>
+                    <img src={image.src} alt={image.caption} loading="lazy" />
+                    <figcaption>{image.caption}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'history' && (
+          <div className="prose">
+            <p className="landmark-summary">{landmark.summary}</p>
+            <dl className="facts">
+              <div><dt>Built</dt><dd>{landmark.built}</dd></div>
+              <div><dt>Architect</dt><dd>{landmark.architect}</dd></div>
+            </dl>
+            {landmark.history.map((paragraph) => <p key={paragraph.slice(0, 24)}>{paragraph}</p>)}
+          </div>
+        )}
+
+        {tab === 'materials' && (
+          <div className="prose">
+            <h4>Materials</h4>
+            {landmark.materials.map((material) => (
+              <div key={material.name} className="material-row">
+                <i style={{ background: material.colour }} />
+                <div><b>{material.name}</b><small>{material.note}</small></div>
+              </div>
+            ))}
+            <h4>Design concepts</h4>
+            {landmark.concepts.map((concept) => (
+              <div key={concept.name} className="concept-row">
+                <b>{concept.name}</b>
+                <small>{concept.note}</small>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === 'artifacts' && (
+          <div className="prose">
+            <h4>Artifacts &amp; features</h4>
+            {landmark.artifacts.map((artifact) => (
+              <div key={artifact.name} className="concept-row">
+                <b>{artifact.name}</b>
+                <small>{artifact.note}</small>
+              </div>
+            ))}
+            {landmark.images.length > 0 ? (
+              <div className="image-grid">
+                {landmark.images.map((image) => (
+                  <figure key={image.src}>
+                    <img src={image.src} alt={image.caption} loading="lazy" />
+                    <figcaption>{image.caption}</figcaption>
+                  </figure>
+                ))}
+              </div>
+            ) : (
+              <p className="muted-note">No licensed imagery is bundled for this landmark; the 3D reconstruction is procedural.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -273,10 +614,16 @@ function App() {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'2d' | '3d'>('3d')
   const [layersOpen, setLayersOpen] = useState(true)
+  const [placesOpen, setPlacesOpen] = useState(false)
+  const [asciiMode, setAsciiMode] = useState(false)
+  const [overlays, setOverlays] = useState<Overlays>({ buildings: true, traffic: false, crowd: false })
   const [analystText, setAnalystText] = useState('')
   const [analystBusy, setAnalystBusy] = useState(false)
   const [analyst, setAnalyst] = useState<AnalystResponse | null>(null)
   const [now, setNow] = useState(() => new Date())
+  const [landmarkId, setLandmarkId] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<DetailTab>('view')
+  const [picked, setPicked] = useState<{ lat: number; lng: number } | null>(null)
 
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000)
@@ -321,12 +668,33 @@ function App() {
   }, [signals, tab, activeLayers, query])
 
   const selected = signals.find((signal) => signal.id === selectedId) ?? null
+  const landmark = landmarkId ? LANDMARK_BY_ID.get(landmarkId) ?? null : null
+  const focus = useMemo<[number, number]>(
+    () => (landmark ? [landmark.lng, landmark.lat] : [78.9, 22.4]),
+    [landmark],
+  )
 
-  const newsSourceTabs = useMemo(() => {
-    const names = new Set<string>()
-    snapshot?.news.forEach((item: NewsItem) => names.add(item.source))
-    return [...names].slice(0, 6)
-  }, [snapshot])
+  const openLandmark = (id: string) => {
+    setLandmarkId(id)
+    setDetailTab('view')
+    setPicked(null)
+  }
+
+  const handlePick = (lat: number, lng: number) => {
+    setPicked({ lat, lng })
+    let nearest: Landmark | null = null
+    let best = Number.POSITIVE_INFINITY
+    for (const candidate of LANDMARKS) {
+      const distance = (candidate.lat - lat) ** 2 + (candidate.lng - lng) ** 2
+      if (distance < best) { best = distance; nearest = candidate }
+    }
+    if (nearest && Math.sqrt(best) < 1.2) openLandmark(nearest.id)
+  }
+
+  const nearbyPicked = picked
+    ? signals.filter((signal) => signal.lat !== null && signal.lng !== null
+        && Math.abs(signal.lat - picked.lat) < 1.4 && Math.abs((signal.lng as number) - picked.lng) < 1.4)
+    : []
 
   const toggleLayer = (layer: Layer) =>
     setActiveLayers((current) => current.includes(layer) ? current.filter((item) => item !== layer) : [...current, layer])
@@ -371,6 +739,9 @@ function App() {
               </button>
             )
           })}
+          <button className={`nav-tab ${placesOpen ? 'active' : ''}`} onClick={() => setPlacesOpen(!placesOpen)}>
+            <MapPin size={12} /> Places
+          </button>
         </nav>
         <div className="top-actions">
           <div className="search-inline">
@@ -401,8 +772,8 @@ function App() {
 
       <div className="stripe">
         <ShieldCheck size={13} />
-        <span>Live public data. Not an official warning or government service — follow IMD and NDMA advisories for decisions.</span>
-        <span className="stripe-right">3D SATELLITE · TERRAIN · WGS84</span>
+        <span>Live public data. Not an official warning or government service — follow IMD and NDMA advisories. Traffic and crowd overlays are simulations.</span>
+        <span className="stripe-right">3D SATELLITE · TERRAIN · BUILDINGS</span>
       </div>
 
       {error && (
@@ -420,6 +791,9 @@ function App() {
               <span className="sep" />
               <span>{snapshot?.news.length ?? 0} HEADLINES</span>
             </div>
+            <button className={`ascii-toggle ${asciiMode ? 'active' : ''}`} onClick={() => setAsciiMode(!asciiMode)} title="ASCII projection view">
+              <Grid3x3 size={12} /> ASCII
+            </button>
             <div className="seg" role="group" aria-label="Map view mode">
               <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>2D</button>
               <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>3D</button>
@@ -431,14 +805,20 @@ function App() {
               signals={signals}
               activeLayers={activeLayers}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              overlays={overlays}
               mode={mode}
+              focus={focus}
+              selectedLandmarkId={landmarkId}
+              asciiMode={asciiMode}
+              onSelectSignal={setSelectedId}
+              onSelectLandmark={openLandmark}
+              onPick={handlePick}
             />
 
             <div className={`layer-drawer ${layersOpen ? 'open' : ''}`}>
               <button className="drawer-head" onClick={() => setLayersOpen(!layersOpen)}>
                 <span><Layers3 size={13} /> LAYERS</span>
-                <span className="drawer-count">{activeLayers.length}/{LAYER_ORDER.length}</span>
+                <span className="drawer-count">{activeLayers.length + Object.values(overlays).filter(Boolean).length}</span>
                 <ChevronDown size={13} className={layersOpen ? 'flip' : ''} />
               </button>
               {layersOpen && (
@@ -456,9 +836,56 @@ function App() {
                       </button>
                     )
                   })}
+                  <div className="drawer-divider">3D &amp; SIMULATION</div>
+                  <button className={`layer-row ${overlays.buildings ? 'on' : ''}`} onClick={() => setOverlays({ ...overlays, buildings: !overlays.buildings })}>
+                    <span className={`check ${overlays.buildings ? 'checked' : ''}`} />
+                    <Building2 size={13} style={{ color: '#8ef0ff' }} />
+                    <span className="layer-name">3D buildings</span>
+                    <span className="layer-count">z14+</span>
+                  </button>
+                  <button className={`layer-row ${overlays.traffic ? 'on' : ''}`} onClick={() => setOverlays({ ...overlays, traffic: !overlays.traffic })}>
+                    <span className={`check ${overlays.traffic ? 'checked' : ''}`} />
+                    <Car size={13} style={{ color: '#ffd166' }} />
+                    <span className="layer-name">Traffic <em>sim</em></span>
+                    <span className="layer-count">70</span>
+                  </button>
+                  <button className={`layer-row ${overlays.crowd ? 'on' : ''}`} onClick={() => setOverlays({ ...overlays, crowd: !overlays.crowd })}>
+                    <span className={`check ${overlays.crowd ? 'checked' : ''}`} />
+                    <Footprints size={13} style={{ color: '#ffb347' }} />
+                    <span className="layer-name">Crowd <em>sim</em></span>
+                    <span className="layer-count">110</span>
+                  </button>
                 </div>
               )}
             </div>
+
+            {placesOpen && (
+              <div className="places-drawer">
+                <div className="places-head"><MapPin size={12} /> PLACES · 3D</div>
+                <div className="places-list">
+                  {LANDMARKS.map((place) => (
+                    <button key={place.id} className={`place-row ${place.id === landmarkId ? 'active' : ''}`} onClick={() => openLandmark(place.id)}>
+                      <span>{place.name}</span>
+                      <small>{place.city}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {picked && !landmark && (
+              <div className="locator-card">
+                <div className="locator-head"><Grid3x3 size={11} /> ASCII LOCATOR</div>
+                <b>{picked.lat.toFixed(3)}°N, {picked.lng.toFixed(3)}°E</b>
+                <small>{nearbyPicked.length} live signals within ~150 km</small>
+                {nearbyPicked.slice(0, 2).map((signal) => (
+                  <button key={signal.id} className="locator-row" onClick={() => setSelectedId(signal.id)}>
+                    <span className={`sev ${signal.severity}`} /> {signal.title}
+                  </button>
+                ))}
+                <button className="locator-close" onClick={() => setPicked(null)}><X size={11} /></button>
+              </div>
+            )}
 
             <div className="map-legend">
               {(['critical', 'high', 'medium', 'low'] as Severity[]).map((severity) => (
@@ -469,145 +896,152 @@ function App() {
         </section>
 
         <aside className="rail">
-          <section className="rail-panel feed-panel">
-            <div className="rail-head">
-              <span><Activity size={12} /> LIVE SIGNALS</span>
-              <span className="badge">{visible.length}</span>
-            </div>
-            <div className="rail-tabs">
-              <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>ALL</button>
-              {LAYER_ORDER.map((layer) => (
-                <button key={layer} className={tab === layer ? 'active' : ''} onClick={() => setTab(layer)}>
-                  {LAYER_META[layer].short}
-                </button>
-              ))}
-            </div>
-            <div className="feed">
-              {!snapshot && !error && <div className="feed-empty">Connecting to live feeds…</div>}
-              {snapshot && !visible.length && <div className="feed-empty">No live records match this filter.</div>}
-              {visible.slice(0, 120).map((signal) => (
-                <button
-                  key={signal.id}
-                  className={`feed-row ${selectedId === signal.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedId(signal.id)}
-                >
-                  <span className={`sev ${signal.severity}`} />
-                  <span className="feed-copy">
-                    <b>{signal.title}</b>
-                    <small>{signal.place || '—'} · {signal.provider}</small>
-                  </span>
-                  <span className="feed-time">{relative(signal.time, now)}</span>
-                </button>
-              ))}
-            </div>
-          </section>
-
-          {selected && (
-            <section className="rail-panel detail-panel">
-              <div className="rail-head">
-                <span><Search size={12} /> SELECTED SIGNAL</span>
-                <span className={`sev-label ${selected.severity}`}>{selected.severity.toUpperCase()}</span>
-              </div>
-              <div className="detail">
-                <h3>{selected.title}</h3>
-                <p>{selected.detail || 'No further detail supplied by the provider.'}</p>
-                <dl>
-                  <div><dt>Place</dt><dd>{selected.place || '—'}</dd></div>
-                  <div><dt>Observed</dt><dd>{selected.time ? `${new Date(selected.time).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '—'}</dd></div>
-                  <div><dt>Provider</dt><dd>{selected.provider}</dd></div>
-                  <div><dt>Feed</dt><dd>{selected.source}</dd></div>
-                  {Object.entries(selected.metrics).slice(0, 3).map(([key, value]) => (
-                    <div key={key}><dt>{key.replace(/_/g, ' ')}</dt><dd>{typeof value === 'number' ? Number(value.toFixed(1)) : value}</dd></div>
+          {landmark ? (
+            <LandmarkPanel landmark={landmark} tab={detailTab} onTab={setDetailTab} onClose={() => setLandmarkId(null)} />
+          ) : (
+            <>
+              <section className="rail-panel feed-panel">
+                <div className="rail-head">
+                  <span><Activity size={12} /> LIVE SIGNALS</span>
+                  <span className="badge">{visible.length}</span>
+                </div>
+                <div className="rail-tabs">
+                  <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>ALL</button>
+                  {LAYER_ORDER.map((layer) => (
+                    <button key={layer} className={tab === layer ? 'active' : ''} onClick={() => setTab(layer)}>
+                      {LAYER_META[layer].short}
+                    </button>
                   ))}
-                </dl>
-                {selected.url && (
-                  <a className="detail-link" href={selected.url} target="_blank" rel="noreferrer">
-                    Open source record <ArrowUpRight size={12} />
-                  </a>
-                )}
-              </div>
-            </section>
-          )}
+                </div>
+                <div className="feed">
+                  {!snapshot && !error && <div className="feed-empty">Connecting to live feeds…</div>}
+                  {snapshot && !visible.length && <div className="feed-empty">No live records match this filter.</div>}
+                  {visible.slice(0, 120).map((signal) => (
+                    <button
+                      key={signal.id}
+                      className={`feed-row ${selectedId === signal.id ? 'selected' : ''}`}
+                      onClick={() => setSelectedId(signal.id)}
+                    >
+                      <span className={`sev ${signal.severity}`} />
+                      <span className="feed-copy">
+                        <b>{signal.title}</b>
+                        <small>{signal.place || '—'} · {signal.provider}</small>
+                      </span>
+                      <span className="feed-time">{relative(signal.time, now)}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
 
-          <section className="rail-panel news-panel">
-            <div className="rail-head">
-              <span><Database size={12} /> LIVE HEADLINES</span>
-              <span className="badge">{snapshot?.news.length ?? 0}</span>
-            </div>
-            <div className="rail-tabs">
-              {newsSourceTabs.length > 0
-                ? newsSourceTabs.map((name) => <span key={name} className="source-tab">{name}</span>)
-                : <span className="source-tab">Awaiting feeds</span>}
-            </div>
-            <div className="news-list">
-              {(snapshot?.news ?? []).slice(0, 20).map((item) => (
-                <a key={item.id} className="news-row" href={item.url} target="_blank" rel="noreferrer">
-                  <b>{item.title}</b>
-                  <small>{item.source} · {relative(item.published, now)} ago</small>
-                </a>
-              ))}
-            </div>
-          </section>
-
-          <section className="rail-panel analyst-panel">
-            <div className="rail-head">
-              <span><Sparkles size={12} /> INDIA ANALYST</span>
-              <span className="mode-tag">GROUNDED</span>
-            </div>
-            <form className="analyst-form" onSubmit={askAnalyst}>
-              <input
-                value={analystText}
-                onChange={(event) => setAnalystText(event.target.value)}
-                placeholder="Ask about quakes, air, weather, flights…"
-              />
-              <button className="primary" disabled={analystBusy || analystText.trim().length < 3}>
-                {analystBusy ? '…' : <Bot size={16} />}
-              </button>
-            </form>
-            {analyst && (
-              <div className="analyst-answer">
-                <div className="answer-meta">{analyst.mode} · {analyst.is_llm ? 'LLM' : 'NO MODEL'} · {relative(analyst.grounded_at, now)} ago</div>
-                <p>{analyst.answer}</p>
-                {analyst.evidence.length > 0 && (
-                  <div className="evidence">
-                    {analyst.evidence.map((item) => (
-                      <a key={item.id} href={item.url ?? '#'} target="_blank" rel="noreferrer">
-                        <span className={`sev ${item.severity}`} /> {item.title}
+              {selected && (
+                <section className="rail-panel detail-panel">
+                  <div className="rail-head">
+                    <span><Search size={12} /> SELECTED SIGNAL</span>
+                    <span className={`sev-label ${selected.severity}`}>{selected.severity.toUpperCase()}</span>
+                  </div>
+                  <div className="detail">
+                    <h3>{selected.title}</h3>
+                    <p>{selected.detail || 'No further detail supplied by the provider.'}</p>
+                    <dl>
+                      <div><dt>Place</dt><dd>{selected.place || '—'}</dd></div>
+                      <div><dt>Observed</dt><dd>{selected.time ? `${new Date(selected.time).toISOString().slice(0, 16).replace('T', ' ')} UTC` : '—'}</dd></div>
+                      <div><dt>Provider</dt><dd>{selected.provider}</dd></div>
+                      <div><dt>Feed</dt><dd>{selected.source}</dd></div>
+                      {Object.entries(selected.metrics).slice(0, 3).map(([key, value]) => (
+                        <div key={key}><dt>{key.replace(/_/g, ' ')}</dt><dd>{typeof value === 'number' ? Number(value.toFixed(1)) : value}</dd></div>
+                      ))}
+                    </dl>
+                    {selected.url && (
+                      <a className="detail-link" href={selected.url} target="_blank" rel="noreferrer">
+                        Open source record <ArrowUpRight size={12} />
                       </a>
-                    ))}
+                    )}
+                  </div>
+                </section>
+              )}
+
+              <section className="rail-panel news-panel">
+                <div className="rail-head">
+                  <span><Database size={12} /> LIVE HEADLINES</span>
+                  <span className="badge">{snapshot?.news.length ?? 0}</span>
+                </div>
+                <div className="rail-tabs">
+                  {snapshot?.news.length
+                    ? [...new Set((snapshot?.news ?? []).map((item: NewsItem) => item.source))].slice(0, 6)
+                        .map((name) => <span key={name} className="source-tab">{name}</span>)
+                    : <span className="source-tab">Awaiting feeds</span>}
+                </div>
+                <div className="news-list">
+                  {(snapshot?.news ?? []).slice(0, 20).map((item) => (
+                    <a key={item.id} className="news-row" href={item.url} target="_blank" rel="noreferrer">
+                      <b>{item.title}</b>
+                      <small>{item.source} · {relative(item.published, now)} ago</small>
+                    </a>
+                  ))}
+                </div>
+              </section>
+
+              <section className="rail-panel analyst-panel">
+                <div className="rail-head">
+                  <span><Sparkles size={12} /> INDIA ANALYST</span>
+                  <span className="mode-tag">GROUNDED</span>
+                </div>
+                <form className="analyst-form" onSubmit={askAnalyst}>
+                  <input
+                    value={analystText}
+                    onChange={(event) => setAnalystText(event.target.value)}
+                    placeholder="Ask about quakes, air, weather, flights…"
+                  />
+                  <button className="primary" disabled={analystBusy || analystText.trim().length < 3}>
+                    {analystBusy ? '…' : <Bot size={16} />}
+                  </button>
+                </form>
+                {analyst && (
+                  <div className="analyst-answer">
+                    <div className="answer-meta">{analyst.mode} · {analyst.is_llm ? 'LLM' : 'NO MODEL'} · {relative(analyst.grounded_at, now)} ago</div>
+                    <p>{analyst.answer}</p>
+                    {analyst.evidence.length > 0 && (
+                      <div className="evidence">
+                        {analyst.evidence.map((item) => (
+                          <a key={item.id} href={item.url ?? '#'} target="_blank" rel="noreferrer">
+                            <span className={`sev ${item.severity}`} /> {item.title}
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
-              </div>
-            )}
-          </section>
+              </section>
 
-          <section className="rail-panel health-panel">
-            <div className="rail-head">
-              <span><ShieldCheck size={12} /> SOURCE HEALTH</span>
-              <span className="badge">{sourcesOk}/{sourcesTotal || '—'}</span>
-            </div>
-            <div className="health-list">
-              {(snapshot?.sources ?? []).map((source) => (
-                <div key={source.id} className="health-row" title={source.license}>
-                  <span className={`status-dot ${source.ok ? 'ok' : 'bad'}`} />
-                  <span className="health-name">
-                    <b>{source.name}</b>
-                    <small>{source.provider}</small>
-                  </span>
-                  <span className="health-meta">
-                    {source.ok ? `${source.records} rec` : (source.last_error ? 'error' : '—')}
-                    <small>{source.ok ? relative(source.last_success, now) : ''}</small>
-                  </span>
+              <section className="rail-panel health-panel">
+                <div className="rail-head">
+                  <span><ShieldCheck size={12} /> SOURCE HEALTH</span>
+                  <span className="badge">{sourcesOk}/{sourcesTotal || '—'}</span>
                 </div>
-              ))}
-            </div>
-          </section>
+                <div className="health-list">
+                  {(snapshot?.sources ?? []).map((source) => (
+                    <div key={source.id} className="health-row" title={source.license}>
+                      <span className={`status-dot ${source.ok ? 'ok' : 'bad'}`} />
+                      <span className="health-name">
+                        <b>{source.name}</b>
+                        <small>{source.provider}</small>
+                      </span>
+                      <span className="health-meta">
+                        {source.ok ? `${source.records} rec` : (source.last_error ? 'error' : '—')}
+                        <small>{source.ok ? relative(source.last_success, now) : ''}</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </>
+          )}
         </aside>
       </main>
 
       <footer className="footer">
         <span>INDIA AI OS MAPS · LIVE GEOSPATIAL INTELLIGENCE</span>
-        <span>USGS · GDACS/UN OCHA · OPEN-METEO · OPENSKY · GOOGLE NEWS / TOI</span>
+        <span><Camera size={9} /> 3D RECONSTRUCTION · SIMULATED TRAFFIC &amp; CROWD</span>
         <span>NOT AN OFFICIAL GOVERNMENT PLATFORM</span>
       </footer>
     </div>

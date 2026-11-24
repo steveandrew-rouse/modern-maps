@@ -115,7 +115,26 @@ Signal record:
 
 `provider`, `time` and `url` are mandatory provenance fields; the UI shows them for every selected record.
 
-## 7. Hosting
+## 7. 3D map, ASCII locator and landmarks
+
+**3D map.** The basemap is Esri satellite imagery over AWS terrain, so the camera can be tilted, rotated and pitched to any angle. Real building extrusions come from OpenFreeMap vector tiles (`building` layer with `render_height`) and appear from zoom 14, coloured by height over the imagery.
+
+**ASCII projection.** The `ASCII` button renders the current map view as a character grid sampled from the live canvas. Clicking any cell un-projects that pixel to WGS84 coordinates, drops a locator pin, and lists the nearest landmarks and live signals within range.
+
+**Traffic and crowd simulators.** Layer-drawer toggles for `Traffic sim` and `Crowd sim` animate vehicles and pulsing crowd density around the focused place. These are simulations, labelled as such in the UI and in the status strip — not measured traffic or footfall.
+
+**Landmark reconstruction.** Eight Indian landmarks (Taj Mahal, India Gate, Gateway of India, Charminar, Hawa Mahal, Qutub Minar, Mysore Palace, Harmandir Sahib) are pinned on the map. Opening one replaces the right rail with a landmark panel:
+
+- **360° VIEW** — a Three.js procedural reconstruction with orbit, auto-rotate and a low `WALK` camera pass, plus bundled imagery.
+- **HISTORY** — summary, build dates, architect and historical notes.
+- **MATERIALS** — stone, inlay and cladding with colour swatches, plus design concepts.
+- **ARTIFACTS** — architectural features, cenotaphs, screens, gilding and related artifacts.
+
+The 3D models are procedural interpretations built from primitives, not survey-grade or photogrammetric models. The Taj Mahal imagery in `frontend/public/landmarks/` is AI-generated illustration and is captioned as such.
+
+![ASCII projection](ascii-view.png)
+
+## 8. Hosting
 
 The UI is a static single-page app; the API is a Python service. They are deployed separately.
 
@@ -140,11 +159,14 @@ $env:VITE_API_URL="https://your-api.example.com"; npm run build
 
 Pages cannot execute Python, so a Pages-only deployment shows the UI shell with an API-unavailable banner until `VITE_API_URL` points at a reachable API.
 
-## 8. Honesty and limits
+## 9. Honesty and limits
 
 - Not an official government service. Follow IMD and NDMA for warnings.
 - Feeds provide observations and official alerts — not forecasts. No predictive model is included.
 - The analyst is deterministic and grounded: it composes text from the current snapshot, cites records, and uses no language model.
+- The 3D landmark models are procedural interpretations, not measured or photogrammetric reconstructions.
+- Traffic and crowd overlays are simulations, not observed vehicle counts or footfall.
+- Bundled landmark imagery is AI-generated illustration, captioned in the interface.
 - No person-level tracking, no face recognition, no watchlists, no surveillance workflows.
 - Every source's licence and refresh cadence is visible in the UI and `/api/v1/status`.
 
